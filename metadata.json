@@ -1,0 +1,6 @@
+{
+  "name": "VoxRead - AI & Offline Read Aloud Reader",
+  "description": "Functional text-to-speech reader for web pages, PDFs, ePubs, and text with sentence-by-sentence and word-by-word synchronized highlighting, customizable voices, and offline library.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
