@@ -1,7 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import { ArticleDocument, DisplaySettings, SentenceItem, WordToken } from '../types';
 import { tokenizeWords, decodeHtmlAndNormalizeQuotes, extractLinkFromToken } from '../utils/textParser';
-import { ExternalLink, ChevronLeft, ChevronRight, BookOpen } from 'lucide-react';
+import { ExternalLink, ChevronLeft, ChevronRight, BookOpen, FileText } from 'lucide-react';
 
 interface ReaderViewProps {
   document: ArticleDocument;
@@ -156,7 +156,18 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
         <div
           className={`space-y-6 select-text transition-all ${getFontFamilyClass()} ${getFontSizeClass()} ${getLineHeightClass()}`}
         >
-          {document.paragraphs.map((paragraph) => {
+          {document.paragraphs.length === 0 ? (
+            <div className="py-20 text-center border-2 border-dashed border-neutral-200 dark:border-neutral-800 rounded-2xl p-8 bg-neutral-50/50 dark:bg-neutral-900/30">
+              <FileText className="w-12 h-12 mx-auto mb-3 text-neutral-300 dark:text-neutral-600" />
+              <h3 className="text-base font-semibold text-neutral-700 dark:text-neutral-300">
+                Blank Document
+              </h3>
+              <p className="text-xs text-neutral-400 dark:text-neutral-500 mt-1 max-w-sm mx-auto">
+                This document currently contains no text. You can paste text or add another file anytime.
+              </p>
+            </div>
+          ) : (
+            document.paragraphs.map((paragraph) => {
             const isHeading = paragraph.isHeading;
             const headingLevel = paragraph.headingLevel || 2;
 
@@ -305,7 +316,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                 })}
               </div>
             );
-          })}
+          }))}
 
           {/* Documentation Navigation (Next / Previous Article buttons) */}
           {document.docNavigation && (document.docNavigation.next || document.docNavigation.prev) && (

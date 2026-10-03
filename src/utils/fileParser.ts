@@ -1,6 +1,7 @@
 import JSZip from 'jszip';
 import * as pdfjsLib from 'pdfjs-dist';
-import { decodeHtmlAndNormalizeQuotes } from './textParser';
+import { decodeHtmlAndNormalizeQuotes, parseTextIntoDocument } from './textParser';
+import { ArticleDocument } from '../types';
 
 // Configure pdfjs worker to a reliable CDN fallback or standard module worker
 if (typeof window !== 'undefined') {
@@ -13,6 +14,57 @@ export interface ParsedFileResult {
   author?: string;
   content: string;
   fileType: 'pdf' | 'epub' | 'text';
+}
+
+export interface BinaryFilePayload {
+  isBinaryFile: boolean;
+  fileType: 'pdf' | 'epub';
+  fileName: string;
+  url: string;
+  domain?: string;
+  base64?: string;
+  proxyDownloadUrl?: string;
+  contentType?: string;
+}
+
+/**
+ * Process a binary PDF or ePub file response from the server,
+ * parse its text/chapters/metadata, and return a complete ArticleDocument.
+ */
+export async function processBinaryFileResponse(data: BinaryFilePayload): Promise<ArticleDocument> {
+  let arrayBuffer: ArrayBuffer;
+  if (data.base64) {
+    const binaryString = atob(data.base64);
+    const len = binaryString.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+    arrayBuffer = bytes.buffer;
+  } else if (data.proxyDownloadUrl) {
+    const res = await fetch(data.proxyDownloadUrl);
+    if (!res.ok) throw new Error(`Failed to download ${data.fileType.toUpperCase()} file from server.`);
+    arrayBuffer = await res.arrayBuffer();
+  } else {
+    throw new Error('No file payload found in server response.');
+  }
+
+  const mimeType = data.contentType || (data.fileType === 'pdf' ? 'application/pdf' : 'application/epub+zip');
+  const file = new File([arrayBuffer], data.fileName, { type: mimeType });
+
+  const parsedResult = data.fileType === 'pdf' ? await parsePdfFile(file) : await parseEpubFile(file);
+
+  if (!parsedResult.content || parsedResult.content.trim().length === 0) {
+    throw new Error(`No readable text could be extracted from this ${data.fileType.toUpperCase()} file.`);
+  }
+
+  return parseTextIntoDocument(parsedResult.content, {
+    title: parsedResult.title || data.fileName.replace(/\.[^/.]+$/, ''),
+    author: parsedResult.author,
+    fileType: data.fileType,
+    domain: data.domain,
+    sourceUrl: data.url,
+  });
 }
 
 /**
@@ -55,6 +107,11 @@ export async function parsePdfFile(file: File): Promise<ParsedFileResult> {
 
       if (pageStrings.length > 0) {
         fullText += (pageNum > 1 ? '\n\n' : '') + pageStrings.join(' ');
+      }
+      try {
+        page.cleanup();
+      } catch {
+        // ignore cleanup error
       }
     }
 

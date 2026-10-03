@@ -320,7 +320,47 @@ function decodeHtmlAndNormalizeQuotes(text: string): string {
   return s;
 }
 
-// Endpoint: Extract article content from a webpage URL
+// Endpoint: Proxy binary files (PDF, ePub) with streaming and CORS headers
+app.get("/api/proxy-file", async (req, res) => {
+  try {
+    const targetUrl = req.query.url;
+    if (!targetUrl || typeof targetUrl !== "string") {
+      return res.status(400).send("A valid URL parameter is required.");
+    }
+
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(targetUrl.startsWith("http") ? targetUrl : `https://${targetUrl}`);
+    } catch {
+      return res.status(400).send("Invalid URL format.");
+    }
+
+    const fileRes = await fetch(parsedUrl.toString(), {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 VoxRead/1.0",
+        Accept: "*/*",
+      },
+      signal: AbortSignal.timeout(60000),
+    });
+
+    if (!fileRes.ok) {
+      return res.status(fileRes.status).send(`Failed to fetch file: ${fileRes.statusText}`);
+    }
+
+    const contentType = fileRes.headers.get("content-type") || "application/octet-stream";
+    res.setHeader("Content-Type", contentType);
+    res.setHeader("Access-Control-Allow-Origin", "*");
+
+    const buffer = Buffer.from(await fileRes.arrayBuffer());
+    return res.send(buffer);
+  } catch (err: any) {
+    console.error("Proxy file error:", err);
+    return res.status(500).send(err.message || "Failed to proxy file.");
+  }
+});
+
+// Endpoint: Extract article content from a webpage URL or download PDF/ePub files
 app.post("/api/extract-webpage", async (req, res) => {
   try {
     const { url } = req.body;
@@ -339,14 +379,66 @@ app.post("/api/extract-webpage", async (req, res) => {
       headers: {
         "User-Agent":
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 VoxRead/1.0",
-        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,application/pdf,application/epub+zip,*/*;q=0.8",
       },
-      signal: AbortSignal.timeout(12000),
+      signal: AbortSignal.timeout(35000),
     });
 
     if (!response.ok) {
       return res.status(response.status).json({
         error: `Failed to fetch webpage: HTTP ${response.status} ${response.statusText}`,
+      });
+    }
+
+    const contentType = (response.headers.get("content-type") || "").toLowerCase();
+    const pathnameLower = parsedUrl.pathname.toLowerCase();
+    const isPdf =
+      pathnameLower.endsWith(".pdf") ||
+      contentType.includes("application/pdf") ||
+      contentType.includes("application/x-pdf");
+    const isEpub =
+      pathnameLower.endsWith(".epub") ||
+      contentType.includes("application/epub") ||
+      contentType.includes("application/epub+zip");
+
+    // Handle direct PDF or ePub file links
+    if (isPdf || isEpub) {
+      let fileName = "";
+      const disposition = response.headers.get("content-disposition");
+      if (disposition) {
+        const match = disposition.match(/filename\*?=(?:UTF-8'')?["']?([^"';]+)["']?/i);
+        if (match?.[1]) {
+          fileName = decodeURIComponent(match[1]);
+        }
+      }
+      if (!fileName) {
+        const segments = parsedUrl.pathname.split("/").filter(Boolean);
+        fileName = segments.pop() || (isPdf ? "document.pdf" : "book.epub");
+      }
+      if (!fileName.toLowerCase().endsWith(isPdf ? ".pdf" : ".epub")) {
+        fileName += isPdf ? ".pdf" : ".epub";
+      }
+
+      const arrayBuffer = await response.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+      const proxyDownloadUrl = `/api/proxy-file?url=${encodeURIComponent(parsedUrl.toString())}`;
+
+      let base64: string | undefined = undefined;
+      // Include base64 directly for files under 25MB for single-roundtrip parsing
+      if (buffer.length < 25 * 1024 * 1024) {
+        base64 = buffer.toString("base64");
+      }
+
+      return res.json({
+        isBinaryFile: true,
+        fileType: isPdf ? "pdf" : "epub",
+        fileName,
+        url: parsedUrl.toString(),
+        domain: parsedUrl.hostname,
+        base64,
+        proxyDownloadUrl,
+        sizeBytes: buffer.length,
+        contentType: isPdf ? "application/pdf" : "application/epub+zip",
       });
     }
 

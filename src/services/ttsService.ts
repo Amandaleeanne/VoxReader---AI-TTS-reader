@@ -10,11 +10,28 @@ export interface TTSCallbacks {
 }
 
 /**
+ * Hashed dictionary of short, unstressed monosyllabic function words (clitics).
+ * In natural and neural speech synthesis, these words undergo vowel reduction (schwa)
+ * and co-articulation, speaking in 30-40% of the duration of stressed content words.
+ */
+export const SHORT_FUNCTION_WORDS = new Set<string>([
+  // Articles & demonstratives
+  'a', 'an', 'the',
+  // Prepositions
+  'in', 'on', 'at', 'to', 'by', 'of', 'for', 'up', 'as', 'into', 'from', 'with', 'off',
+  // Conjunctions
+  'and', 'or', 'but', 'nor', 'so', 'if', 'than', 'that',
+  // Pronouns
+  'it', 'its', 'he', 'she', 'we', 'me', 'us', 'him', 'my', 'his', 'her', 'our', 'you',
+  // Auxiliary & copular verbs
+  'is', 'am', 'are', 'was', 'be', 'do', 'did', 'has', 'had', 'can', 'may'
+]);
+
+/**
  * Estimate word boundaries for audio playback with dynamic timing adjustment.
  * At playback rates above 1.5x, pauses around punctuation are compressed aggressively
  * by neural TTS synthesizers and audio time-stretch DSP algorithms compared to voiced phonemes.
- * This function dynamically recalibrates pause weights and syllabic distribution
- * so word timings remain aligned during high-speed playback.
+ * Uses a hashed dictionary to fine-tune short monosyllabic words so highlighting moves briskly.
  */
 export function calculateWordTimings(
   words: WordToken[],
@@ -29,11 +46,32 @@ export function calculateWordTimings(
       ? Math.max(0.35, 1.0 / (1.0 + (playbackRate - 1.5) * 0.85))
       : 1.0;
 
-  const weights = words.map((w) => {
-    const text = w.cleanWord || w.word;
-    const len = text.length;
-    // Sub-linear syllable scaling so short and long words scale proportionally
-    let weight = len <= 2 ? 1.8 : Math.pow(len, 0.85) * 1.5;
+  const weights = words.map((w, i) => {
+    const clean = (w.cleanWord || w.word).toLowerCase().replace(/[^a-z0-9]/g, '');
+    const isShort = SHORT_FUNCTION_WORDS.has(clean);
+    const nextClean =
+      i + 1 < words.length
+        ? (words[i + 1].cleanWord || words[i + 1].word).toLowerCase().replace(/[^a-z0-9]/g, '')
+        : '';
+    const nextIsShort = SHORT_FUNCTION_WORDS.has(nextClean);
+
+    let weight: number;
+    if (isShort) {
+      // High-speed clitic phonetics: short monosyllables speak in reduced, rapid durations
+      if (clean.length === 1) weight = 0.65;
+      else if (clean.length === 2) weight = 0.85;
+      else weight = 1.05;
+    } else {
+      const len = clean.length || w.word.length;
+      weight = len <= 2 ? 1.4 : Math.pow(len, 0.85) * 1.5;
+    }
+
+    // Dynamic co-articulation adjustment:
+    // If the next word is in the hashed dictionary of fast-spoken short words,
+    // the speaker articulates forward directly into it, so the highlight does not stay on for as long.
+    if (nextIsShort && !isShort) {
+      weight *= 0.88;
+    }
 
     // Dynamically scaled punctuation pause weights
     if (/[,;:]/.test(w.word)) weight += 1.8 * pauseFactor;
@@ -733,20 +771,6 @@ export class TTSController {
     }
   }
 
-  /**
-   * Dynamic hardware latency offset calculation for accelerated playback.
-   * At rates above 1.5x, browser audio output buffering (~35-50ms wall-clock) translates
-   * to a noticeable lead on the media timeline (latencySec * rate).
-   * Compensating for this keeps word highlighting aligned with physical speaker output.
-   */
-  private getDynamicLatencyOffset(rate: number): number {
-    if (rate <= 1.0) return 0;
-    // Typical browser Web Audio / MediaElement pipeline latency is ~38ms
-    const baseLatencySec = 0.038;
-    const speedRatio = Math.max(0, rate - 1.0);
-    return baseLatencySec * (1.0 + speedRatio * 0.75);
-  }
-
   private startAudioWordTracking(sentence: SentenceItem, audio: HTMLAudioElement) {
     const onLoadedMetadata = () => {
       const duration = audio.duration || 1;
@@ -764,10 +788,11 @@ export class TTSController {
   private trackAudioWordFrame(sentence: SentenceItem, audio: HTMLAudioElement) {
     if (!this.isPlaying || audio.paused) return;
 
-    const rate = this.settings.rate || 1.0;
-    // Dynamic latency adjustment for high-speed playback (> 1.5x)
-    const latencyOffset = rate >= 1.25 ? this.getDynamicLatencyOffset(rate) : 0;
-    const effectiveTime = Math.max(0, audio.currentTime - latencyOffset);
+    // Perceptual audio-visual alignment:
+    // A micro lead-in of ~20ms compensates for display frame delivery and eye tracking saccades,
+    // ensuring word highlights trigger cleanly on phonetic onset rather than lagging behind.
+    const perceptualLeadSec = 0.020;
+    const effectiveTime = audio.currentTime + perceptualLeadSec;
 
     let activeWordIndex: number | null = null;
 

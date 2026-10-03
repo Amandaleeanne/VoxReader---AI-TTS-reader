@@ -10,7 +10,7 @@ import {
   FileCheck,
   AlertCircle,
 } from 'lucide-react';
-import { parseEpubFile, parsePdfFile, parseTextFile } from '../utils/fileParser';
+import { parseEpubFile, parsePdfFile, parseTextFile, processBinaryFileResponse } from '../utils/fileParser';
 import { parseTextIntoDocument } from '../utils/textParser';
 import { ArticleDocument } from '../types';
 import { SAMPLE_ARTICLES } from '../data/sampleArticles';
@@ -69,6 +69,15 @@ export const ImportModal: React.FC<ImportModalProps> = ({
       }
 
       const data = await res.json();
+
+      // If the URL was a PDF or ePub file, parse it as a file directly into library
+      if (data.isBinaryFile) {
+        const doc = await processBinaryFileResponse(data);
+        onDocumentLoaded(doc);
+        onClose();
+        return;
+      }
+
       if (!data.content || data.content.trim().length === 0) {
         throw new Error('No readable article text found at this address.');
       }
@@ -124,12 +133,15 @@ export const ImportModal: React.FC<ImportModalProps> = ({
         throw new Error('Unsupported format. Please upload a PDF, ePub, TXT, or MD file.');
       }
 
-      if (!result.content || result.content.trim().length === 0) {
+      const isTextFile = ['txt', 'md', 'text', 'rtf'].includes(extension || '');
+
+      // Allow blank .txt or .md files. For PDF and ePub, require readable extracted text.
+      if (!isTextFile && (!result.content || result.content.trim().length === 0)) {
         throw new Error('File did not contain any readable text.');
       }
 
-      const doc = parseTextIntoDocument(result.content, {
-        title: result.title,
+      const doc = parseTextIntoDocument(result.content || '', {
+        title: result.title || file.name.replace(/\.[^/.]+$/, ''),
         author: result.author,
         fileType: result.fileType,
       });
@@ -248,14 +260,14 @@ export const ImportModal: React.FC<ImportModalProps> = ({
             <div className="space-y-5">
               <div>
                 <label className="block text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400 mb-1.5">
-                  Webpage or Article Link
+                  Webpage, PDF, or ePub Link
                 </label>
                 <div className="flex gap-2">
                   <div className="relative flex-1">
                     <Globe className="w-4 h-4 absolute left-3 top-3.5 text-neutral-400" />
                     <input
                       type="url"
-                      placeholder="https://en.wikipedia.org/wiki/Speed_reading or news article"
+                      placeholder="https://... article link, or direct .pdf / .epub URL (e.g. research papers, eBooks)"
                       value={webpageUrl}
                       onChange={(e) => setWebpageUrl(e.target.value)}
                       onKeyDown={(e) => e.key === 'Enter' && handleFetchUrl()}
@@ -273,7 +285,7 @@ export const ImportModal: React.FC<ImportModalProps> = ({
                         <span>Loading...</span>
                       </>
                     ) : (
-                      <span>Load Article</span>
+                      <span>Load Content</span>
                     )}
                   </button>
                 </div>
@@ -342,7 +354,7 @@ export const ImportModal: React.FC<ImportModalProps> = ({
                         Drag and drop your document here, or browse
                       </p>
                       <p className="text-xs text-neutral-500 dark:text-neutral-400">
-                        Supports PDF (.pdf), ePub books (.epub), Text (.txt), and Markdown (.md)
+                        Supports PDF (.pdf), ePub books (.epub), Text (.txt, including blank files), and Markdown (.md)
                       </p>
                     </div>
 

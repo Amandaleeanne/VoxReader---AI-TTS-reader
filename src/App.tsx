@@ -10,6 +10,7 @@ import { ShortcutsModal } from './components/ShortcutsModal';
 import { ArticleDocument, DisplaySettings, VoiceSettings } from './types';
 import { TTSController } from './services/ttsService';
 import { parseTextIntoDocument } from './utils/textParser';
+import { processBinaryFileResponse } from './utils/fileParser';
 import { SAMPLE_ARTICLES } from './data/sampleArticles';
 import {
   saveArticleToStorage,
@@ -228,12 +229,18 @@ export default function App() {
     const updatedList = await getAllArticlesFromStorage();
     setSavedArticles(updatedList);
 
-    showToast(`Loaded "${sanitized.title}". Ready to read.`, 'success');
+    const toastMsg =
+      sanitized.totalSentences > 0
+        ? `Loaded "${sanitized.title}". Ready to read.`
+        : `Loaded blank document "${sanitized.title}".`;
+    showToast(toastMsg, 'success');
 
-    // Automatically begin playback with chosen model
-    setTimeout(() => {
-      ttsControllerRef.current?.jumpToSentence(0, true);
-    }, 150);
+    // Automatically begin playback with chosen model if content has sentences
+    if (sanitized.totalSentences > 0) {
+      setTimeout(() => {
+        ttsControllerRef.current?.jumpToSentence(0, true);
+      }, 150);
+    }
   };
 
   // Select document from Library
@@ -246,9 +253,11 @@ export default function App() {
 
     showToast(`Resumed "${sanitized.title}" at sentence ${startSentenceIndex + 1}.`, 'info');
 
-    setTimeout(() => {
-      ttsControllerRef.current?.jumpToSentence(startSentenceIndex, true);
-    }, 150);
+    if (sanitized.totalSentences > 0) {
+      setTimeout(() => {
+        ttsControllerRef.current?.jumpToSentence(startSentenceIndex, true);
+      }, 150);
+    }
   };
 
   // Navigate to an in-text hyperlink or documentation next/prev button
@@ -267,6 +276,15 @@ export default function App() {
       }
 
       const data = await res.json();
+
+      // If hyperlink pointed to a PDF or ePub file, parse and load it into library
+      if (data.isBinaryFile) {
+        showToast(`Loading and parsing ${data.fileType.toUpperCase()} file...`, 'info');
+        const newDoc = await processBinaryFileResponse(data);
+        await handleDocumentLoaded(newDoc);
+        return;
+      }
+
       if (!data.content || data.content.trim().length === 0) {
         throw new Error('No readable article text found at this address.');
       }
