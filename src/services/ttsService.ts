@@ -120,6 +120,8 @@ export class TTSController {
   // Audio cache to save tokens and eliminate repeat fetch delays
   private audioCache = new Map<string, string>();
   private inFlightFetches = new Map<string, Promise<string>>();
+  private activeAbortController: AbortController | null = null;
+  private currentGenerationId: number = 0;
   private wordTimings: { wordIndex: number; startTime: number; endTime: number }[] = [];
   private timeUpdateAnimFrame: number | null = null;
   private isTransitioning: boolean = false;
@@ -211,7 +213,6 @@ export class TTSController {
     this.isPlaying = true;
     this.notifyState();
     await this.playSentence(this.currentIndex, false);
-    this.triggerDynamicPrefetch(this.currentIndex);
   }
 
   public pause() {
@@ -231,6 +232,7 @@ export class TTSController {
 
   public async jumpToSentence(index: number, autoPlay: boolean = true) {
     if (index < 0 || index >= this.sentences.length) return;
+    this.cancelSpeech();
     this.currentIndex = index;
     this.callbacks.onSentenceChange?.(this.currentIndex);
     this.callbacks.onWordBoundary?.(null, 0);
@@ -239,9 +241,7 @@ export class TTSController {
       this.isPlaying = true;
       this.notifyState();
       await this.playSentence(this.currentIndex, true);
-      this.triggerDynamicPrefetch(this.currentIndex);
     } else {
-      this.cancelSpeech();
       this.isPlaying = false;
       this.notifyState();
     }
@@ -271,6 +271,12 @@ export class TTSController {
    * Only called on manual user action (pause, stop, jump), never between sequential sentences!
    */
   private cancelSpeech() {
+    this.currentGenerationId++;
+    if (this.activeAbortController) {
+      this.activeAbortController.abort();
+      this.activeAbortController = null;
+    }
+
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       window.speechSynthesis.cancel();
     }
@@ -279,10 +285,12 @@ export class TTSController {
     if (this.primaryAudio) {
       this.primaryAudio.pause();
       this.primaryAudio.currentTime = 0;
+      this.primaryAudio.src = '';
     }
     if (this.secondaryAudio) {
       this.secondaryAudio.pause();
       this.secondaryAudio.currentTime = 0;
+      this.secondaryAudio.src = '';
     }
     if (this.timeUpdateAnimFrame) {
       cancelAnimationFrame(this.timeUpdateAnimFrame);
@@ -424,6 +432,12 @@ export class TTSController {
     const inFlight = this.inFlightFetches.get(cacheKey);
     if (inFlight) return inFlight;
 
+    if (!this.activeAbortController) {
+      this.activeAbortController = new AbortController();
+    }
+    const signal = this.activeAbortController.signal;
+    const currentGen = this.currentGenerationId;
+
     let endpoint = '/api/tts/gemini';
     let headers: Record<string, string> = { 'Content-Type': 'application/json' };
     const cleanSpoken = decodeHtmlAndNormalizeQuotes(sentence.text)
@@ -457,10 +471,17 @@ export class TTSController {
 
     const fetchPromise = (async () => {
       try {
+        if (signal.aborted || this.currentGenerationId !== currentGen) {
+          const abortErr = new Error('TTS fetch aborted');
+          abortErr.name = 'AbortError';
+          throw abortErr;
+        }
+
         const res = await fetch(endpoint, {
           method: 'POST',
           headers,
           body: JSON.stringify(body),
+          signal,
         });
 
         if (!res.ok) {
@@ -478,8 +499,11 @@ export class TTSController {
         this.audioCache.set(cacheKey, audioUrl);
         return audioUrl;
       } catch (err: any) {
-        // If Gemini hit quota or failed, automatically fall back to EdgeTTS
-        if (this.settings.engine === 'gemini') {
+        if (err.name === 'AbortError' || signal.aborted || this.currentGenerationId !== currentGen) {
+          throw err;
+        }
+        // If Gemini hit quota or failed, automatically fall back to EdgeTTS (only if still active session!)
+        if (this.settings.engine === 'gemini' && !signal.aborted && this.currentGenerationId === currentGen) {
           try {
             const edgeRes = await fetch('/api/tts/edge', {
               method: 'POST',
@@ -488,6 +512,7 @@ export class TTSController {
                 text: sentence.text.trim(),
                 voice: 'en-US-AriaNeural',
               }),
+              signal,
             });
             if (edgeRes.ok) {
               const edgeData = await edgeRes.json();
@@ -550,7 +575,6 @@ export class TTSController {
         standby.playbackRate = this.settings.rate;
         standby.volume = this.settings.volume;
         standby.src = audioUrl;
-        standby.load();
         // ONLY mark as preloaded after audio URL is loaded and ready
         this.preloadedIndex = nextIndex;
       }
@@ -562,53 +586,26 @@ export class TTSController {
   }
 
   /**
-   * Dynamically pre-fetches audio sentences ahead of the current playback position.
-   * Scales aggressively with playback rate: at 3x speed, warms up to 10 sentences ahead
-   * so whole paragraphs are pre-cached in memory for instantaneous zero-latency playback.
+   * Controlled single-worker lookahead:
+   * 1. First preloads immediate next sentence into standby player for instant 0ms swap.
+   * 2. After standby is ready, warms the following sentence into in-memory audioCache.
+   * Never floods concurrent connections, ensuring maximum responsiveness and zero API throttling.
    */
   private triggerDynamicPrefetch(fromIndex: number) {
     if (!this.isPlaying || this.settings.engine === 'webspeech') return;
 
-    const lookahead = this.getPrefetchLookaheadCount();
-    const targetMax = Math.min(fromIndex + lookahead, this.sentences.length - 1);
-
-    // Immediate next sentence is preloaded into standby audio player for gapless swap
-    if (fromIndex + 1 <= targetMax) {
-      this.preloadNextSentence(fromIndex + 1);
-    }
-
-    // Subsequent sentences across upcoming paragraphs are pre-fetched concurrently into audioCache
-    const sentencesToWarm: SentenceItem[] = [];
-    for (let idx = fromIndex + 2; idx <= targetMax; idx++) {
-      const sentence = this.sentences[idx];
-      if (sentence) {
-        const key = this.getCacheKey(sentence);
-        if (!this.audioCache.has(key) && !this.inFlightFetches.has(key)) {
-          sentencesToWarm.push(sentence);
+    if (fromIndex + 1 < this.sentences.length) {
+      this.preloadNextSentence(fromIndex + 1).then(() => {
+        if (this.isPlaying && fromIndex + 2 < this.sentences.length) {
+          const warmSentence = this.sentences[fromIndex + 2];
+          if (warmSentence) {
+            const key = this.getCacheKey(warmSentence);
+            if (!this.audioCache.has(key) && !this.inFlightFetches.has(key)) {
+              this.fetchAudioUrl(warmSentence).catch(() => {});
+            }
+          }
         }
-      }
-    }
-
-    if (sentencesToWarm.length === 0) return;
-
-    // Parallel fetch with concurrency limit of 3 to optimize throughput without browser network congestion
-    const concurrency = Math.min(3, sentencesToWarm.length);
-    let queueIdx = 0;
-
-    const runWorker = async () => {
-      while (queueIdx < sentencesToWarm.length && this.isPlaying) {
-        const item = sentencesToWarm[queueIdx++];
-        if (!item) break;
-        try {
-          await this.fetchAudioUrl(item);
-        } catch {
-          // background pre-fetch error is non-fatal
-        }
-      }
-    };
-
-    for (let i = 0; i < concurrency; i++) {
-      runWorker();
+      });
     }
   }
 
@@ -662,6 +659,8 @@ export class TTSController {
       }
     }
 
+    const currentGen = this.currentGenerationId;
+
     // Otherwise, fetch / retrieve from cache
     let audioUrl: string;
     const cacheKey = this.getCacheKey(sentence);
@@ -679,13 +678,17 @@ export class TTSController {
       } catch (err: any) {
         this.isBuffering = false;
         this.notifyState();
+        if (err.name === 'AbortError' || this.currentGenerationId !== currentGen || !this.isPlaying) {
+          // Document switched or playback cancelled: exit cleanly with no error
+          return;
+        }
         console.warn('Server TTS failed, falling back to Web Speech:', err);
         this.playViaWebSpeech(sentence, true);
         return;
       }
     }
 
-    if (!this.isPlaying) return;
+    if (!this.isPlaying || this.currentGenerationId !== currentGen) return;
 
     this.isBuffering = false;
     this.notifyState();
@@ -752,7 +755,7 @@ export class TTSController {
       this.primaryAudio.onplaying = () => this.primaryAudio && enforceRate(this.primaryAudio);
       this.primaryAudio.oncanplay = () => this.primaryAudio && enforceRate(this.primaryAudio);
       this.primaryAudio.onerror = () => {
-        if (this.isPlaying && this.activePlayerIndex === 0) {
+        if (this.isPlaying && this.activePlayerIndex === 0 && Boolean(this.primaryAudio?.src)) {
           this.callbacks.onError?.('Audio playback encountered an issue.');
         }
       };
@@ -764,7 +767,7 @@ export class TTSController {
       this.secondaryAudio.onplaying = () => this.secondaryAudio && enforceRate(this.secondaryAudio);
       this.secondaryAudio.oncanplay = () => this.secondaryAudio && enforceRate(this.secondaryAudio);
       this.secondaryAudio.onerror = () => {
-        if (this.isPlaying && this.activePlayerIndex === 1) {
+        if (this.isPlaying && this.activePlayerIndex === 1 && Boolean(this.secondaryAudio?.src)) {
           this.callbacks.onError?.('Audio playback encountered an issue.');
         }
       };

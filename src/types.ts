@@ -69,6 +69,7 @@ export interface VoiceSettings {
   pitch: number; // 0.5 to 1.5
   volume: number; // 0 to 1
   autoScroll: boolean;
+  autoPlayOnDocumentLoad: boolean;
 }
 
 export interface DisplaySettings {

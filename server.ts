@@ -16,14 +16,9 @@ const __dirname = path.dirname(__filename);
 const app = express();
 app.use(express.json({ limit: "50mb" }));
 
-// Shared default GoogleGenAI client (User-Agent header required by AI Studio guidelines)
+// Shared default GoogleGenAI client
 const defaultAi = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY || "",
-  httpOptions: {
-    headers: {
-      "User-Agent": "aistudio-build",
-    },
-  },
 });
 
 const VALID_GEMINI_VOICES = ["Kore", "Puck", "Fenrir", "Charon", "Zephyr"] as const;
@@ -37,6 +32,21 @@ export const EDGE_VOICES = [
   { id: "en-AU-NatashaNeural", name: "Natasha (AU Neural - Bright)", lang: "en-AU" },
   { id: "en-CA-ClaraNeural", name: "Clara (CA Neural - Smooth)", lang: "en-CA" },
 ];
+
+// Server-side in-memory audio cache to eliminate latency on replays and duplicate requests
+const serverAudioCache = new Map<string, { audioBase64: string; mimeType: string }>();
+
+function getCachedAudio(key: string) {
+  return serverAudioCache.get(key) || null;
+}
+
+function setCachedAudio(key: string, audioBase64: string, mimeType: string) {
+  if (serverAudioCache.size > 600) {
+    const firstKey = serverAudioCache.keys().next().value;
+    if (firstKey) serverAudioCache.delete(firstKey);
+  }
+  serverAudioCache.set(key, { audioBase64, mimeType });
+}
 
 // Health / status endpoint
 app.get("/api/health", (_req, res) => {
@@ -65,15 +75,24 @@ app.post("/api/tts/gemini", async (req, res) => {
       });
     }
 
+    const selectedVoice = VALID_GEMINI_VOICES.includes(voice) ? voice : "Kore";
+    const cleanText = text.trim().slice(0, 3000);
+
+    const cacheKey = `gemini:${selectedVoice}:${cleanText}`;
+    const cached = getCachedAudio(cacheKey);
+    if (cached) {
+      return res.json({
+        audioBase64: cached.audioBase64,
+        mimeType: cached.mimeType,
+        voice: selectedVoice,
+      });
+    }
+
     const aiClient = customKey.trim()
       ? new GoogleGenAI({
           apiKey: customKey.trim(),
-          httpOptions: { headers: { "User-Agent": "aistudio-build" } },
         })
       : defaultAi;
-
-    const selectedVoice = VALID_GEMINI_VOICES.includes(voice) ? voice : "Kore";
-    const cleanText = text.trim().slice(0, 3000);
 
     const response = await aiClient.models.generateContent({
       model: "gemini-3.8-flash-lite-tts",
@@ -103,6 +122,8 @@ app.post("/api/tts/gemini", async (req, res) => {
       return res.status(502).json({ error: "No audio data received from Gemini TTS model." });
     }
 
+    setCachedAudio(cacheKey, base64Audio, "audio/wav");
+
     return res.json({
       audioBase64: base64Audio,
       mimeType: "audio/wav",
@@ -128,13 +149,31 @@ app.post("/api/tts/edge", async (req, res) => {
     const selectedVoice = voice || "en-US-AriaNeural";
     const cleanText = text.trim().slice(0, 3000);
 
-    const tts = new EdgeTTS({ voice: selectedVoice });
+    const cacheKey = `edge:${selectedVoice}:${cleanText}`;
+    const cached = getCachedAudio(cacheKey);
+    if (cached) {
+      return res.json({
+        audioBase64: cached.audioBase64,
+        mimeType: cached.mimeType,
+        voice: selectedVoice,
+      });
+    }
+
     tempFile = path.join(os.tmpdir(), `edge-${Date.now()}-${Math.random().toString(36).slice(2)}.mp3`);
 
+    const tts = new EdgeTTS({ voice: selectedVoice, timeout: 12000 });
     await tts.ttsPromise(cleanText, tempFile);
+
+    if (res.writableEnded) return;
+
+    if (!fs.existsSync(tempFile)) {
+      throw new Error("EdgeTTS audio file was not written.");
+    }
 
     const buffer = fs.readFileSync(tempFile);
     const base64Audio = buffer.toString("base64");
+
+    setCachedAudio(cacheKey, base64Audio, "audio/mp3");
 
     return res.json({
       audioBase64: base64Audio,
@@ -142,10 +181,50 @@ app.post("/api/tts/edge", async (req, res) => {
       voice: selectedVoice,
     });
   } catch (error: any) {
-    console.error("EdgeTTS Error:", error);
-    return res.status(500).json({
-      error: error?.message || "Failed to generate speech with EdgeTTS.",
-    });
+    if (res.writableEnded) return;
+    console.warn("EdgeTTS error, checking Gemini fallback:", error?.message || error);
+
+    // Seamless fallback to Gemini TTS if EdgeTTS is unreachable or times out
+    if (process.env.GEMINI_API_KEY) {
+      try {
+        const cleanText = (req.body.text || "").trim().slice(0, 3000);
+        const fallbackRes = await defaultAi.models.generateContent({
+          model: "gemini-3.8-flash-lite-tts",
+          contents: [
+            {
+              role: "user",
+              parts: [{ text: cleanText }],
+            },
+          ],
+          config: {
+            responseModalities: ["AUDIO"],
+            speechConfig: {
+              voiceConfig: {
+                prebuiltVoiceConfig: { voiceName: "Kore" },
+              },
+            },
+          },
+        });
+
+        const base64Audio = fallbackRes.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+        if (base64Audio && !res.writableEnded) {
+          return res.json({
+            audioBase64: base64Audio,
+            mimeType: "audio/wav",
+            voice: "Kore",
+            isFallback: true,
+          });
+        }
+      } catch (fbErr: any) {
+        console.warn("Gemini fallback also failed:", fbErr?.message || fbErr);
+      }
+    }
+
+    if (!res.writableEnded) {
+      return res.status(500).json({
+        error: error?.message || "Failed to generate speech with EdgeTTS.",
+      });
+    }
   } finally {
     if (tempFile && fs.existsSync(tempFile)) {
       try {

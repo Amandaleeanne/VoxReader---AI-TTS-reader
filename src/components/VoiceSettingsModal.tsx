@@ -520,6 +520,77 @@ export const VoiceSettingsModal: React.FC<VoiceSettingsModalProps> = ({
             )}
           </div>
 
+          {/* Playback Preferences */}
+          <div className="pt-2 border-t border-neutral-100 dark:border-neutral-800 space-y-3">
+            <label className="block text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
+              Playback Preferences
+            </label>
+
+            {/* Toggle 1: Autoplay on Document Load / Switch */}
+            <div className="flex items-center justify-between p-3 rounded-xl bg-neutral-50 dark:bg-neutral-800/50 border border-neutral-200 dark:border-neutral-700">
+              <div className="pr-4">
+                <span className="text-xs font-semibold text-neutral-800 dark:text-neutral-200 block">
+                  Autoplay On Document Switch
+                </span>
+                <span className="text-[11px] text-neutral-500 dark:text-neutral-400 block mt-0.5">
+                  Begin speech synthesis automatically when opening or switching documents. When disabled, audio stays paused until you press Play.
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() =>
+                  onUpdateSettings({
+                    ...settings,
+                    autoPlayOnDocumentLoad: !settings.autoPlayOnDocumentLoad,
+                  })
+                }
+                className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                  settings.autoPlayOnDocumentLoad
+                    ? 'bg-amber-500'
+                    : 'bg-neutral-300 dark:bg-neutral-700'
+                }`}
+              >
+                <span
+                  className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${
+                    settings.autoPlayOnDocumentLoad ? 'translate-x-4' : 'translate-x-0'
+                  }`}
+                />
+              </button>
+            </div>
+
+            {/* Toggle 2: Auto-scroll during playback */}
+            <div className="flex items-center justify-between p-3 rounded-xl bg-neutral-50 dark:bg-neutral-800/50 border border-neutral-200 dark:border-neutral-700">
+              <div className="pr-4">
+                <span className="text-xs font-semibold text-neutral-800 dark:text-neutral-200 block">
+                  Auto-Scroll During Playback
+                </span>
+                <span className="text-[11px] text-neutral-500 dark:text-neutral-400 block mt-0.5">
+                  Keep active sentence centered in view while speech is progressing.
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() =>
+                  onUpdateSettings({
+                    ...settings,
+                    autoScroll: !settings.autoScroll,
+                  })
+                }
+                className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                  settings.autoScroll
+                    ? 'bg-amber-500'
+                    : 'bg-neutral-300 dark:bg-neutral-700'
+                }`}
+              >
+                <span
+                  className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${
+                    settings.autoScroll ? 'translate-x-4' : 'translate-x-0'
+                  }`}
+                />
+              </button>
+            </div>
+          </div>
+
           {/* Token Optimization Notice */}
           <div className="p-3 bg-emerald-50/70 dark:bg-emerald-950/30 rounded-xl border border-emerald-200/60 dark:border-emerald-800/40 flex items-start gap-2.5 text-xs text-emerald-900 dark:text-emerald-200">
             <Zap className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />

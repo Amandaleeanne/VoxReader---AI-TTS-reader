@@ -37,6 +37,7 @@ const DEFAULT_VOICE_SETTINGS: VoiceSettings = {
   pitch: 1.0,
   volume: 1.0,
   autoScroll: true,
+  autoPlayOnDocumentLoad: false,
 };
 
 const DEFAULT_DISPLAY_SETTINGS: DisplaySettings = {
@@ -218,6 +219,9 @@ export default function App() {
 
   // Load new document (from Webpage, File, or Paste)
   const handleDocumentLoaded = async (newDoc: ArticleDocument) => {
+    // 1. Immediately send stop signal to active TTS stream before switching documents
+    ttsControllerRef.current?.stop();
+
     const sanitized = sanitizeStoredArticle(newDoc);
     setDocument(sanitized);
     setCurrentSentenceIndex(0);
@@ -235,8 +239,8 @@ export default function App() {
         : `Loaded blank document "${sanitized.title}".`;
     showToast(toastMsg, 'success');
 
-    // Automatically begin playback with chosen model if content has sentences
-    if (sanitized.totalSentences > 0) {
+    // Autoplay is a toggleable feature: only begin playback if user enabled autoPlayOnDocumentLoad
+    if (voiceSettings.autoPlayOnDocumentLoad && sanitized.totalSentences > 0) {
       setTimeout(() => {
         ttsControllerRef.current?.jumpToSentence(0, true);
       }, 150);
@@ -245,6 +249,9 @@ export default function App() {
 
   // Select document from Library
   const handleSelectFromLibrary = (article: ArticleDocument, startSentenceIndex: number = 0) => {
+    // 1. Immediately send stop signal to active TTS stream before switching documents
+    ttsControllerRef.current?.stop();
+
     const sanitized = sanitizeStoredArticle(article);
     setDocument(sanitized);
     setCurrentSentenceIndex(startSentenceIndex);
@@ -253,7 +260,8 @@ export default function App() {
 
     showToast(`Resumed "${sanitized.title}" at sentence ${startSentenceIndex + 1}.`, 'info');
 
-    if (sanitized.totalSentences > 0) {
+    // Autoplay is a toggleable feature: only begin playback if user enabled autoPlayOnDocumentLoad
+    if (voiceSettings.autoPlayOnDocumentLoad && sanitized.totalSentences > 0) {
       setTimeout(() => {
         ttsControllerRef.current?.jumpToSentence(startSentenceIndex, true);
       }, 150);
@@ -262,6 +270,8 @@ export default function App() {
 
   // Navigate to an in-text hyperlink or documentation next/prev button
   const handleNavigateToUrl = async (url: string) => {
+    // 1. Immediately send stop signal to active TTS stream before navigating
+    ttsControllerRef.current?.stop();
     showToast(`Loading "${url}"...`, 'info');
     try {
       const res = await fetch('/api/extract-webpage', {
