@@ -45,6 +45,7 @@ const DEFAULT_DISPLAY_SETTINGS: DisplaySettings = {
   fontFamily: 'serif',
   fontSize: 'base',
   lineHeight: 'normal',
+  textAlign: 'left',
   focusMode: false,
   bionicReading: false,
 };

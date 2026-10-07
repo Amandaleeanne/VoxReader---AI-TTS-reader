@@ -7,6 +7,13 @@ export interface WordToken {
   cleanWord?: string; // Phonetic word stripped of outer punctuation for audio timing
   startIndex: number;
   endIndex: number;
+  isBold?: boolean;
+  isItalic?: boolean;
+  isCode?: boolean;
+  isUnderline?: boolean;
+  isStrikethrough?: boolean;
+  linkUrl?: string;
+  hasLineBreakAfter?: boolean; // For preserving exact line breaks in poetry, text, pdf
 }
 
 export interface SentenceItem {
@@ -16,7 +23,22 @@ export interface SentenceItem {
   sentenceIndexInParagraph: number;
   text: string;
   words: WordToken[];
+  isBold?: boolean;
+  isItalic?: boolean;
+  isHeading?: boolean;
+  headingLevel?: number;
 }
+
+export type BlockType =
+  | 'paragraph'
+  | 'heading'
+  | 'chapter-header'
+  | 'blockquote'
+  | 'code'
+  | 'list-item'
+  | 'table'
+  | 'page-break'
+  | 'divider';
 
 export interface ParagraphItem {
   id: string;
@@ -24,7 +46,28 @@ export interface ParagraphItem {
   sentences: SentenceItem[];
   rawText: string;
   isHeading?: boolean;
-  headingLevel?: number;
+  headingLevel?: number; // 1 to 6
+  blockType?: BlockType;
+  pageNumber?: number; // For PDF page tracking
+  chapterTitle?: string; // For EPUB chapter grouping
+  isListItem?: boolean;
+  listMarker?: string; // e.g. "•", "1.", "-"
+  textAlign?: 'left' | 'center' | 'right' | 'justify';
+  isBold?: boolean;
+  isItalic?: boolean;
+  preserveLineBreaks?: boolean; // For text/poetry/dialogue where exact lines must be preserved
+  fontSizePt?: number; // Exact PDF font size if available
+  fontFamilyName?: string; // e.g., 'serif', 'sans', 'mono'
+  indentPx?: number; // Left indentation in pixels or ems from PDF minX or CSS
+  isPoemOrVerse?: boolean;
+  tableData?: {
+    headers: string[];
+    rows: string[][];
+    alignments?: ('left' | 'center' | 'right')[];
+  }; // For tables in EPUB, Markdown, or PDF
+  runningHeader?: string;
+  runningFooter?: string;
+  hasExplicitParagraphBreak?: boolean;
 }
 
 export interface DocNavigationItem {
@@ -37,13 +80,25 @@ export interface DocNavigation {
   next?: DocNavigationItem;
 }
 
+export interface DocumentMetadataDetails {
+  pageCount?: number;
+  fileSizeFormatted?: string;
+  publisher?: string;
+  publicationDate?: string;
+  language?: string;
+  chapters?: string[];
+  pdfCreator?: string;
+  pdfProducer?: string;
+  subject?: string;
+}
+
 export interface ArticleDocument {
   id: string;
   title: string;
   author?: string;
   domain?: string;
   sourceUrl?: string;
-  fileType: 'webpage' | 'pdf' | 'epub' | 'text' | 'manual';
+  fileType: 'webpage' | 'pdf' | 'epub' | 'text' | 'manual' | 'markdown';
   rawContent: string;
   paragraphs: ParagraphItem[];
   totalSentences: number;
@@ -53,6 +108,7 @@ export interface ArticleDocument {
   lastReadSentenceIndex: number;
   favorite?: boolean;
   docNavigation?: DocNavigation;
+  metadataDetails?: DocumentMetadataDetails;
 }
 
 export interface VoiceSettings {
@@ -77,6 +133,7 @@ export interface DisplaySettings {
   fontFamily: 'serif' | 'sans' | 'dyslexic' | 'mono';
   fontSize: 'sm' | 'base' | 'lg' | 'xl' | '2xl';
   lineHeight: 'tight' | 'normal' | 'relaxed';
+  textAlign?: 'left' | 'justify' | 'center';
   focusMode: boolean; // Dims non-active sentences slightly to enhance focus
   bionicReading: boolean; // Bold initial letters of words
 }

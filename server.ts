@@ -6,7 +6,9 @@ import fs from "fs";
 import { fileURLToPath } from "url";
 import { GoogleGenAI } from "@google/genai";
 import { createServer as createViteServer } from "vite";
-import { EdgeTTS } from "node-edge-tts";
+import WebSocket from "ws";
+import { randomBytes } from "crypto";
+import { generateSecMsGecToken, TRUSTED_CLIENT_TOKEN, CHROMIUM_FULL_VERSION } from "node-edge-tts/dist/drm.js";
 
 dotenv.config();
 
@@ -33,6 +35,141 @@ export const EDGE_VOICES = [
   { id: "en-CA-ClaraNeural", name: "Clara (CA Neural - Smooth)", lang: "en-CA" },
 ];
 
+/**
+ * Direct in-memory streaming synthesizer for EdgeTTS.
+ * - Zero disk I/O, zero temp files, zero file-system race conditions
+ * - Complete SSML XML escaping to prevent synthesis syntax errors
+ * - Fast timeout (7s) and immediate socket cleanup on finish or client abort
+ */
+async function synthesizeEdgeDirect(
+  text: string,
+  voice: string = "en-US-AriaNeural",
+  timeoutMs: number = 7000,
+  abortSignal?: AbortSignal
+): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    let finished = false;
+    let ws: WebSocket | null = null;
+    let timeoutId: NodeJS.Timeout | null = null;
+    const chunks: Buffer[] = [];
+
+    const cleanup = () => {
+      if (finished) return;
+      finished = true;
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+        timeoutId = null;
+      }
+      if (ws) {
+        try {
+          // Attach no-op error listener to swallow any errors during socket destruction
+          ws.on("error", () => {});
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.close();
+          } else {
+            ws.terminate();
+          }
+        } catch {}
+        ws = null;
+      }
+    };
+
+    if (abortSignal?.aborted) {
+      return reject(new Error("EdgeTTS request aborted by client"));
+    }
+
+    if (abortSignal) {
+      abortSignal.addEventListener("abort", () => {
+        cleanup();
+        reject(new Error("EdgeTTS request aborted by client"));
+      });
+    }
+
+    timeoutId = setTimeout(() => {
+      cleanup();
+      reject(new Error("EdgeTTS WebSocket timeout"));
+    }, timeoutMs);
+
+    try {
+      const url = `wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1?TrustedClientToken=${TRUSTED_CLIENT_TOKEN}&Sec-MS-GEC=${generateSecMsGecToken()}&Sec-MS-GEC-Version=1-${CHROMIUM_FULL_VERSION}`;
+      ws = new WebSocket(url, {
+        host: "speech.platform.bing.com",
+        origin: "chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold",
+        headers: {
+          Pragma: "no-cache",
+          "Cache-Control": "no-cache",
+          "User-Agent": `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROMIUM_FULL_VERSION.split(".")[0]}.0.0.0 Safari/537.36 Edg/${CHROMIUM_FULL_VERSION.split(".")[0]}.0.0.0`,
+          "Accept-Encoding": "gzip, deflate, br, zstd",
+          "Accept-Language": "en-US,en;q=0.9",
+        },
+      });
+
+      ws.on("open", () => {
+        if (finished || !ws) return;
+        ws.send(
+          `Content-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"false"},"outputFormat":"audio-24khz-48kbitrate-mono-mp3"}}}}\r\n`
+        );
+
+        const reqId = randomBytes(16).toString("hex");
+        const cleanVoice = voice || "en-US-AriaNeural";
+        const cleanXmlText = text
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&apos;");
+        const ssml = `<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xmlns:mstts="https://www.w3.org/2001/mstts" xml:lang="en-US"><voice name="${cleanVoice}"><prosody rate="0%" pitch="0%" volume="0%">${cleanXmlText}</prosody></voice></speak>`;
+        ws.send(
+          `X-RequestId:${reqId}\r\nContent-Type:application/ssml+xml\r\nPath:ssml\r\n\r\n${ssml}`
+        );
+      });
+
+      ws.on("message", (data: any, isBinary: boolean) => {
+        if (finished) return;
+        if (isBinary) {
+          const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+          const sep = Buffer.from("Path:audio\r\n");
+          const idx = buf.indexOf(sep);
+          if (idx !== -1) {
+            chunks.push(buf.subarray(idx + sep.length));
+          }
+        } else {
+          const str = data.toString();
+          if (str.includes("Path:turn.end")) {
+            const resultBuffer = Buffer.concat(chunks);
+            cleanup();
+            if (resultBuffer.length > 0) {
+              resolve(resultBuffer);
+            } else {
+              reject(new Error("EdgeTTS returned empty audio stream"));
+            }
+          }
+        }
+      });
+
+      ws.on("error", (err: any) => {
+        cleanup();
+        reject(err);
+      });
+
+      ws.on("close", () => {
+        if (!finished) {
+          const resultBuffer = Buffer.concat(chunks);
+          cleanup();
+          if (resultBuffer.length > 0) {
+            resolve(resultBuffer);
+          } else {
+            reject(new Error("EdgeTTS connection closed prematurely"));
+          }
+        }
+      });
+    } catch (err) {
+      cleanup();
+      reject(err);
+    }
+  });
+}
+
 // Server-side in-memory audio cache to eliminate latency on replays and duplicate requests
 const serverAudioCache = new Map<string, { audioBase64: string; mimeType: string }>();
 
@@ -41,7 +178,7 @@ function getCachedAudio(key: string) {
 }
 
 function setCachedAudio(key: string, audioBase64: string, mimeType: string) {
-  if (serverAudioCache.size > 600) {
+  if (serverAudioCache.size > 800) {
     const firstKey = serverAudioCache.keys().next().value;
     if (firstKey) serverAudioCache.delete(firstKey);
   }
@@ -58,88 +195,95 @@ app.get("/api/health", (_req, res) => {
   });
 });
 
-// Endpoint: Generate Speech via Gemini 3.8 Flash Lite TTS (Supports default or user-provided Gemini key)
+// Endpoint: Generate Speech via Gemini 3.8 Flash Lite TTS with automatic EdgeTTS seamless fallback
 app.post("/api/tts/gemini", async (req, res) => {
-  try {
-    const { text, voice } = req.body;
-    const customKey = (req.headers["x-gemini-key"] as string) || "";
-    const activeKey = customKey.trim() || process.env.GEMINI_API_KEY;
+  const { text, voice } = req.body;
+  if (!text || typeof text !== "string" || !text.trim()) {
+    return res.status(400).json({ error: "Text is required for TTS generation." });
+  }
 
-    if (!text || typeof text !== "string" || !text.trim()) {
-      return res.status(400).json({ error: "Text is required for TTS generation." });
-    }
+  const customKey = (req.headers["x-gemini-key"] as string) || "";
+  const activeKey = customKey.trim() || process.env.GEMINI_API_KEY;
+  const selectedVoice = VALID_GEMINI_VOICES.includes(voice) ? voice : "Kore";
+  const cleanText = text.trim().slice(0, 3000);
 
-    if (!activeKey) {
-      return res.status(503).json({
-        error: "Gemini API key is not configured. You can use free EdgeTTS, offline Web Speech, or add your key in Voice Settings.",
-      });
-    }
-
-    const selectedVoice = VALID_GEMINI_VOICES.includes(voice) ? voice : "Kore";
-    const cleanText = text.trim().slice(0, 3000);
-
-    const cacheKey = `gemini:${selectedVoice}:${cleanText}`;
-    const cached = getCachedAudio(cacheKey);
-    if (cached) {
-      return res.json({
-        audioBase64: cached.audioBase64,
-        mimeType: cached.mimeType,
-        voice: selectedVoice,
-      });
-    }
-
-    const aiClient = customKey.trim()
-      ? new GoogleGenAI({
-          apiKey: customKey.trim(),
-        })
-      : defaultAi;
-
-    const response = await aiClient.models.generateContent({
-      model: "gemini-3.8-flash-lite-tts",
-      contents: [
-        {
-          role: "user",
-          parts: [
-            {
-              text: cleanText,
-            },
-          ],
-        },
-      ],
-      config: {
-        responseModalities: ["AUDIO"],
-        speechConfig: {
-          voiceConfig: {
-            prebuiltVoiceConfig: { voiceName: selectedVoice },
-          },
-        },
-      },
-    });
-
-    const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-
-    if (!base64Audio) {
-      return res.status(502).json({ error: "No audio data received from Gemini TTS model." });
-    }
-
-    setCachedAudio(cacheKey, base64Audio, "audio/wav");
-
+  const cacheKey = `gemini:${selectedVoice}:${cleanText}`;
+  const cached = getCachedAudio(cacheKey);
+  if (cached) {
     return res.json({
-      audioBase64: base64Audio,
-      mimeType: "audio/wav",
+      audioBase64: cached.audioBase64,
+      mimeType: cached.mimeType,
       voice: selectedVoice,
     });
-  } catch (error: any) {
-    console.error("Gemini TTS Error:", error);
+  }
+
+  // If Gemini API key is available, try Gemini first
+  if (activeKey) {
+    try {
+      const aiClient = customKey.trim()
+        ? new GoogleGenAI({ apiKey: customKey.trim() })
+        : defaultAi;
+
+      const response = await aiClient.models.generateContent({
+        model: "gemini-3.8-flash-lite-tts",
+        contents: [
+          {
+            role: "user",
+            parts: [{ text: cleanText }],
+          },
+        ],
+        config: {
+          responseModalities: ["AUDIO"],
+          speechConfig: {
+            voiceConfig: {
+              prebuiltVoiceConfig: { voiceName: selectedVoice },
+            },
+          },
+        },
+      });
+
+      const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+      if (base64Audio) {
+        setCachedAudio(cacheKey, base64Audio, "audio/wav");
+        return res.json({
+          audioBase64: base64Audio,
+          mimeType: "audio/wav",
+          voice: selectedVoice,
+        });
+      }
+    } catch (geminiError: any) {
+      console.warn("Gemini TTS quota or network error, falling back seamlessly to EdgeTTS:", geminiError?.message || geminiError);
+    }
+  }
+
+  // Automatic high-speed fallback to EdgeTTS so the user NEVER experiences long loading or failure
+  try {
+    const edgeBuffer = await synthesizeEdgeDirect(cleanText, "en-US-AriaNeural", 6000);
+    const base64 = edgeBuffer.toString("base64");
+    setCachedAudio(cacheKey, base64, "audio/mp3");
+    return res.json({
+      audioBase64: base64,
+      mimeType: "audio/mp3",
+      voice: "Aria (Fallback)",
+      isFallback: true,
+    });
+  } catch (fbErr: any) {
+    console.error("Both Gemini and EdgeTTS fallback failed:", fbErr);
     return res.status(500).json({
-      error: error?.message || "Failed to generate speech with Gemini TTS.",
+      error: "Unable to generate speech. Please check your internet connection or switch to Offline Speech.",
     });
   }
 });
 
-// Endpoint: Generate Speech via EdgeTTS (100% Free, No API key needed, high-quality neural voices)
+// Endpoint: Generate Speech via EdgeTTS (Ultra-fast, in-memory, 100% free neural voices)
 app.post("/api/tts/edge", async (req, res) => {
-  let tempFile = "";
+  const abortController = new AbortController();
+  res.on("close", () => {
+    if (!res.writableFinished && !res.writableEnded) {
+      abortController.abort();
+    }
+  });
+
   try {
     const { text, voice } = req.body;
     if (!text || typeof text !== "string" || !text.trim()) {
@@ -159,20 +303,11 @@ app.post("/api/tts/edge", async (req, res) => {
       });
     }
 
-    tempFile = path.join(os.tmpdir(), `edge-${Date.now()}-${Math.random().toString(36).slice(2)}.mp3`);
-
-    const tts = new EdgeTTS({ voice: selectedVoice, timeout: 12000 });
-    await tts.ttsPromise(cleanText, tempFile);
+    const audioBuffer = await synthesizeEdgeDirect(cleanText, selectedVoice, 7000, abortController.signal);
 
     if (res.writableEnded) return;
 
-    if (!fs.existsSync(tempFile)) {
-      throw new Error("EdgeTTS audio file was not written.");
-    }
-
-    const buffer = fs.readFileSync(tempFile);
-    const base64Audio = buffer.toString("base64");
-
+    const base64Audio = audioBuffer.toString("base64");
     setCachedAudio(cacheKey, base64Audio, "audio/mp3");
 
     return res.json({
@@ -182,56 +317,27 @@ app.post("/api/tts/edge", async (req, res) => {
     });
   } catch (error: any) {
     if (res.writableEnded) return;
-    console.warn("EdgeTTS error, checking Gemini fallback:", error?.message || error);
 
-    // Seamless fallback to Gemini TTS if EdgeTTS is unreachable or times out
-    if (process.env.GEMINI_API_KEY) {
-      try {
-        const cleanText = (req.body.text || "").trim().slice(0, 3000);
-        const fallbackRes = await defaultAi.models.generateContent({
-          model: "gemini-3.8-flash-lite-tts",
-          contents: [
-            {
-              role: "user",
-              parts: [{ text: cleanText }],
-            },
-          ],
-          config: {
-            responseModalities: ["AUDIO"],
-            speechConfig: {
-              voiceConfig: {
-                prebuiltVoiceConfig: { voiceName: "Kore" },
-              },
-            },
-          },
+    // Retry once with default Aria neural voice if another voice failed
+    try {
+      const cleanText = (req.body.text || "").trim().slice(0, 3000);
+      const audioBuffer = await synthesizeEdgeDirect(cleanText, "en-US-AriaNeural", 6000, abortController.signal);
+      if (!res.writableEnded) {
+        const base64Audio = audioBuffer.toString("base64");
+        return res.json({
+          audioBase64: base64Audio,
+          mimeType: "audio/mp3",
+          voice: "en-US-AriaNeural",
         });
-
-        const base64Audio = fallbackRes.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-        if (base64Audio && !res.writableEnded) {
-          return res.json({
-            audioBase64: base64Audio,
-            mimeType: "audio/wav",
-            voice: "Kore",
-            isFallback: true,
-          });
-        }
-      } catch (fbErr: any) {
-        console.warn("Gemini fallback also failed:", fbErr?.message || fbErr);
       }
+    } catch {
+      // ignore retry error
     }
 
     if (!res.writableEnded) {
       return res.status(500).json({
         error: error?.message || "Failed to generate speech with EdgeTTS.",
       });
-    }
-  } finally {
-    if (tempFile && fs.existsSync(tempFile)) {
-      try {
-        fs.unlinkSync(tempFile);
-      } catch {
-        // ignore
-      }
     }
   }
 });
@@ -786,7 +892,7 @@ async function startServer() {
     });
   }
 
-  const PORT = Number(process.env.PORT) || 3000;
+  const PORT = 3000;
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`VoxRead Server running on http://0.0.0.0:${PORT}`);
   });

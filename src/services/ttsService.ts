@@ -285,12 +285,14 @@ export class TTSController {
     if (this.primaryAudio) {
       this.primaryAudio.pause();
       this.primaryAudio.currentTime = 0;
-      this.primaryAudio.src = '';
+      this.primaryAudio.removeAttribute('src');
+      this.primaryAudio.load();
     }
     if (this.secondaryAudio) {
       this.secondaryAudio.pause();
       this.secondaryAudio.currentTime = 0;
-      this.secondaryAudio.src = '';
+      this.secondaryAudio.removeAttribute('src');
+      this.secondaryAudio.load();
     }
     if (this.timeUpdateAnimFrame) {
       cancelAnimationFrame(this.timeUpdateAnimFrame);
@@ -610,6 +612,8 @@ export class TTSController {
   }
 
   private async playViaServerTTS(sentence: SentenceItem, index: number, isManualJump: boolean) {
+    const currentGen = this.currentGenerationId;
+
     if (this.timeUpdateAnimFrame) {
       cancelAnimationFrame(this.timeUpdateAnimFrame);
       this.timeUpdateAnimFrame = null;
@@ -656,10 +660,13 @@ export class TTSController {
         return;
       } catch (err: any) {
         if (err.name === 'AbortError') return;
+        console.warn('Preloaded audio play error, falling back to Web Speech:', err);
+        if (this.isPlaying && this.currentGenerationId === currentGen) {
+          this.playViaWebSpeech(sentence, true);
+        }
+        return;
       }
     }
-
-    const currentGen = this.currentGenerationId;
 
     // Otherwise, fetch / retrieve from cache
     let audioUrl: string;
@@ -722,7 +729,10 @@ export class TTSController {
       this.triggerDynamicPrefetch(index);
     } catch (e: any) {
       if (e.name !== 'AbortError') {
-        console.warn('Audio play error:', e);
+        console.warn('Audio play error, falling back to Web Speech:', e);
+        if (this.isPlaying && this.currentGenerationId === currentGen) {
+          this.playViaWebSpeech(sentence, true);
+        }
       }
     }
   }

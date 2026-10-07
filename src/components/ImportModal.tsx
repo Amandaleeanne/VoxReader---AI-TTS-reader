@@ -11,7 +11,7 @@ import {
   AlertCircle,
 } from 'lucide-react';
 import { parseEpubFile, parsePdfFile, parseTextFile, processBinaryFileResponse } from '../utils/fileParser';
-import { parseTextIntoDocument } from '../utils/textParser';
+import { parseTextIntoDocument, createDocumentFromParagraphs } from '../utils/textParser';
 import { ArticleDocument } from '../types';
 import { SAMPLE_ARTICLES } from '../data/sampleArticles';
 
@@ -140,11 +140,21 @@ export const ImportModal: React.FC<ImportModalProps> = ({
         throw new Error('File did not contain any readable text.');
       }
 
-      const doc = parseTextIntoDocument(result.content || '', {
-        title: result.title || file.name.replace(/\.[^/.]+$/, ''),
-        author: result.author,
-        fileType: result.fileType,
-      });
+      const doc =
+        result.paragraphs && result.paragraphs.length > 0
+          ? createDocumentFromParagraphs(result.paragraphs, {
+              title: result.title || file.name.replace(/\.[^/.]+$/, ''),
+              author: result.author,
+              fileType: result.fileType,
+              metadataDetails: result.metadataDetails,
+              rawContent: result.content,
+            })
+          : parseTextIntoDocument(result.content || '', {
+              title: result.title || file.name.replace(/\.[^/.]+$/, ''),
+              author: result.author,
+              fileType: result.fileType,
+              metadataDetails: result.metadataDetails,
+            });
 
       onDocumentLoaded(doc);
       onClose();

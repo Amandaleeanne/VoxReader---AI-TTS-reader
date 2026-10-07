@@ -6,6 +6,8 @@ import {
   Eye,
   X,
   AlignLeft,
+  AlignJustify,
+  AlignCenter,
   Sparkles,
 } from 'lucide-react';
 import { DisplaySettings } from '../types';
@@ -156,6 +158,57 @@ export const AppearanceModal: React.FC<AppearanceModalProps> = ({
                   {lh.label}
                 </button>
               ))}
+            </div>
+          </div>
+
+          {/* Text Alignment (Prefers Left adjustment) */}
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <label className="block text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
+                Text Alignment
+              </label>
+              <span className="text-[11px] text-amber-600 dark:text-amber-400 font-medium">
+                Prefers Left
+              </span>
+            </div>
+            <div className="flex items-center gap-1.5 bg-neutral-100 dark:bg-neutral-800 p-1 rounded-xl">
+              {[
+                {
+                  id: 'left',
+                  label: 'Left Aligned',
+                  icon: <AlignLeft className="w-3.5 h-3.5" />,
+                  title: 'Left adjusted (Standard reading flow)',
+                },
+                {
+                  id: 'justify',
+                  label: 'Justified',
+                  icon: <AlignJustify className="w-3.5 h-3.5" />,
+                  title: 'Justified text edges',
+                },
+                {
+                  id: 'center',
+                  label: 'Centered',
+                  icon: <AlignCenter className="w-3.5 h-3.5" />,
+                  title: 'Center adjusted text',
+                },
+              ].map((al) => {
+                const isSelected = (settings.textAlign || 'left') === al.id;
+                return (
+                  <button
+                    key={al.id}
+                    onClick={() => onUpdateSettings({ ...settings, textAlign: al.id as any })}
+                    className={`flex-1 py-1.5 px-2 rounded-lg text-xs font-semibold transition-all flex items-center justify-center gap-1.5 ${
+                      isSelected
+                        ? 'bg-white dark:bg-neutral-700 text-amber-600 dark:text-amber-400 shadow-sm'
+                        : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white'
+                    }`}
+                    title={al.title}
+                  >
+                    {al.icon}
+                    <span>{al.label}</span>
+                  </button>
+                );
+              })}
             </div>
           </div>
 

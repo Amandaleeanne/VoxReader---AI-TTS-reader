@@ -73,11 +73,9 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
   // Toggle favorite optimistically without flashing or reloading
   const handleToggleFavorite = async (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
-    setArticles((prev) => {
-      const updated = prev.map((a) => (a.id === id ? { ...a, favorite: !a.favorite } : a));
-      onArticlesChange?.(updated);
-      return updated;
-    });
+    const updated = articles.map((a) => (a.id === id ? { ...a, favorite: !a.favorite } : a));
+    setArticles(updated);
+    onArticlesChange?.(updated);
 
     try {
       await toggleArticleFavorite(id);
@@ -92,11 +90,9 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
     e.stopPropagation();
     if (deletingId === id) {
       // Optimistic instant removal from UI
-      setArticles((prev) => {
-        const updated = prev.filter((a) => a.id !== id);
-        onArticlesChange?.(updated);
-        return updated;
-      });
+      const updated = articles.filter((a) => a.id !== id);
+      setArticles(updated);
+      onArticlesChange?.(updated);
       setDeletingId(null);
 
       try {
