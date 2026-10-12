@@ -4,7 +4,7 @@
 
 Built with React, TypeScript, Vite, and an Express backend that brokers multiple TTS engines, including a fully offline option that uses your devices built-in TTS's.
 
-This was an excersize in utilizing AI agents and Google Studio to build a fully working application within a week that I could use.
+This was an excersize in utilizing AI agents and Google Studio to build a fully working application within a very short timeframe that I could utilize on linux since Natural Reader (the free version) barely works on linux.
 
 ---
 
