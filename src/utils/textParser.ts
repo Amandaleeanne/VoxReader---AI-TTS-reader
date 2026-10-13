@@ -1,4 +1,11 @@
-import { ParagraphItem, SentenceItem, WordToken, ArticleDocument } from '../types';
+import { ParagraphItem, SentenceItem, WordToken, ArticleDocument, TocItem } from '../types';
+import { latexToSpokenText, containsMath } from './mathUtils';
+import {
+  detectTruthTableFromLines,
+  detectGeneralTableFromLines,
+  detectMashedTruthTableInParagraphText,
+  formatTruthTableRowSpeech,
+} from './tableDetector';
 
 /**
  * Fully decode HTML entities (decimal, hex, named, double-encoded) and normalize
@@ -78,6 +85,13 @@ export function decodeHtmlAndNormalizeQuotes(text: string): string {
     }
   });
 
+  // 7. PDF and TeX math font encoding artifacts (equals, parentheses, plus, negation)
+  s = s
+    .replace(/¼/g, '=')
+    .replace(/ð/g, '(')
+    .replace(/Þ/g, ')')
+    .replace(/þ/g, '+');
+
   return s;
 }
 
@@ -121,8 +135,8 @@ export function tokenizeWords(
   defaultFormatting?: Partial<WordToken>
 ): WordToken[] {
   const words: WordToken[] = [];
-  // Match word tokens: markdown links [text](url) or non-whitespace sequences
-  const regex = /\[[^\]]+\]\([^\s)]+\)|\S+/g;
+  // Match word tokens: markdown links [text](url), display math $$...$$, inline math $...$, \(...\), or non-whitespace sequences
+  const regex = /\[[^\]]+\]\([^\s)]+\)|\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|\\\([\s\S]+?\\\)|\$(?!\s|\d+(?:\.\d+)?(?:\s|$))[^$\n]+?(?<!\s)\$|\S+/g;
   let match: RegExpExecArray | null;
 
   while ((match = regex.exec(sentenceText)) !== null) {
@@ -137,6 +151,37 @@ export function tokenizeWords(
     const hasLineBreak =
       defaultFormatting?.hasLineBreakAfter ??
       (nextNewline !== -1 && (nextNonWs === -1 || nextNewline < nextNonWs));
+
+    // Check if token is a LaTeX math expression
+    const isBlockMath = rawWord.startsWith('$$') || rawWord.startsWith('\\[');
+    const isInlineMath =
+      !isBlockMath &&
+      ((rawWord.startsWith('$') && rawWord.endsWith('$') && rawWord.length > 2) ||
+        (rawWord.startsWith('\\(') && rawWord.endsWith('\\)')));
+    const punctMathMatch =
+      !isBlockMath && !isInlineMath
+        ? rawWord.match(/^([(\["']?)(\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|\\\([\s\S]+?\\\)|\$(?!\s|\d+(?:\.\d+)?(?:\s|$))[^$\n]+?(?<!\s)\$)([)\]"',.;:!?]?)$/)
+        : null;
+
+    if (isBlockMath || isInlineMath || punctMathMatch) {
+      const mathBody = punctMathMatch ? punctMathMatch[2] : rawWord;
+      const cleanLatex = mathBody
+        .replace(/^\$\$|\$\$$|^\\\[|\\\]$|^\$|\$$|^\\\(|\\\)$/g, '')
+        .trim();
+      const spoken = latexToSpokenText(cleanLatex);
+      words.push({
+        word: rawWord,
+        cleanWord: spoken || cleanLatex,
+        startIndex,
+        endIndex,
+        isMath: true,
+        mathLatex: cleanLatex,
+        mathDisplayMode: isBlockMath,
+        spokenMath: spoken,
+        hasLineBreakAfter: hasLineBreak,
+      });
+      continue;
+    }
 
     let cleanWord: string;
     let isBold = defaultFormatting?.isBold ?? false;
@@ -227,6 +272,10 @@ export function protectNonSentencePeriods(text: string): string {
       // Ellipses: ... or …
       .replace(/\.{2,}/g, '§ELLIP§')
       .replace(/…/g, '§ELLIP§')
+      // Protect periods inside math expressions
+      .replace(/(\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|\\\([\s\S]+?\\\)|\$(?!\s|\d+(?:\.\d+)?(?:\s|$))[^$\n]+?(?<!\s)\$)/g, (m) =>
+        m.replace(/\./g, '§DOT§')
+      )
   );
 }
 
@@ -262,6 +311,8 @@ export function reconcileBrokenParagraphs(paragraphs: ParagraphItem[]): Paragrap
       p.blockType === 'chapter-header' ||
       p.blockType === 'code' ||
       p.blockType === 'table' ||
+      p.blockType === 'figure' ||
+      p.blockType === 'math' ||
       p.blockType === 'divider' ||
       p.blockType === 'list-item' ||
       Boolean(p.isListItem)
@@ -275,6 +326,62 @@ export function reconcileBrokenParagraphs(paragraphs: ParagraphItem[]): Paragrap
     if (current.blockType === 'page-break') {
       result.push(current);
       continue;
+    }
+
+    // Check if current paragraph represents a mashed Truth Table
+    if (current.blockType === 'paragraph' && !current.tableData) {
+      const mashedTable = detectMashedTruthTableInParagraphText(current.rawText);
+      if (mashedTable && mashedTable.rows.length >= 2) {
+        if (mashedTable.textBefore && mashedTable.textBefore.trim().length > 0) {
+          result.push({
+            ...current,
+            id: `${current.id}-pre`,
+            rawText: mashedTable.textBefore.trim(),
+            sentences: [
+              {
+                id: `${current.id}-pre-s-0`,
+                globalIndex: 0,
+                paragraphIndex: current.paragraphIndex,
+                sentenceIndexInParagraph: 0,
+                text: mashedTable.textBefore.trim(),
+                words: tokenizeWords(mashedTable.textBefore.trim()),
+              },
+            ],
+          });
+        }
+
+        const tableSpeech = mashedTable.rows
+          .map((r, rIdx) => formatTruthTableRowSpeech(r, mashedTable.headers, rIdx))
+          .join('. ');
+
+        const rowSentences: SentenceItem[] = mashedTable.rows.map((row, rIdx) => {
+          const rowSpeech = formatTruthTableRowSpeech(row, mashedTable.headers, rIdx);
+          return {
+            id: `${current.id}-tbl-s-${rIdx}`,
+            globalIndex: 0,
+            paragraphIndex: current.paragraphIndex,
+            sentenceIndexInParagraph: rIdx,
+            text: rowSpeech,
+            words: tokenizeWords(rowSpeech),
+          };
+        });
+
+        result.push({
+          ...current,
+          id: `${current.id}-tbl`,
+          blockType: 'table',
+          tableData: {
+            headers: mashedTable.headers,
+            rows: mashedTable.rows,
+            alignments: mashedTable.alignments,
+            isTruthTable: true,
+          },
+          rawText: tableSpeech,
+          sentences: rowSentences,
+        });
+
+        continue;
+      }
     }
 
     if (result.length > 0) {
@@ -371,6 +478,101 @@ export function reconcileBrokenParagraphs(paragraphs: ParagraphItem[]): Paragrap
 }
 
 /**
+ * Splits table cells by pipe, ignoring pipes inside inline math or backticks.
+ */
+export function splitTableCells(rowStr: string): string[] {
+  let trimmed = rowStr.trim();
+  if (trimmed.startsWith('|')) trimmed = trimmed.slice(1);
+  if (trimmed.endsWith('|')) trimmed = trimmed.slice(0, -1);
+  const cells: string[] = [];
+  let current = '';
+  let inMath = false;
+  let inCode = false;
+
+  for (let c = 0; c < trimmed.length; c++) {
+    const char = trimmed[c];
+    if (char === '`') inCode = !inCode;
+    else if (char === '$' && !inCode) inMath = !inMath;
+    else if (char === '|' && !inMath && !inCode) {
+      cells.push(current.trim());
+      current = '';
+      continue;
+    }
+    current += char;
+  }
+  cells.push(current.trim());
+  return cells;
+}
+
+/**
+ * Parses HTML <table> markup into structured headers, rows, and alignments.
+ */
+export function parseHtmlTable(html: string): {
+  headers: string[];
+  rows: string[][];
+  alignments?: ('left' | 'center' | 'right')[];
+  tableSpeech: string;
+} | null {
+  const rowMatches = html.match(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi);
+  if (!rowMatches || rowMatches.length === 0) return null;
+
+  const allRows: string[][] = [];
+  const alignments: ('left' | 'center' | 'right')[] = [];
+
+  for (const rowHtml of rowMatches) {
+    const cells: string[] = [];
+    const cellMatches = rowHtml.match(/<(th|td)\b([^>]*)>([\s\S]*?)<\/\1>/gi);
+    if (!cellMatches) continue;
+
+    for (let c = 0; c < cellMatches.length; c++) {
+      const cellHtml = cellMatches[c];
+      const matchTag = cellHtml.match(/<(th|td)\b([^>]*)>([\s\S]*?)<\/\1>/i);
+      if (!matchTag) continue;
+      const attrs = matchTag[2];
+      const inner = matchTag[3]
+        .replace(/<br\s*\/?>/gi, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+      if (alignments.length <= c) {
+        if (/align=["']center["']|text-center/i.test(attrs)) alignments.push('center');
+        else if (/align=["']right["']|text-right/i.test(attrs)) alignments.push('right');
+        else alignments.push('left');
+      }
+
+      cells.push(decodeHtmlAndNormalizeQuotes(inner));
+    }
+    if (cells.length > 0) allRows.push(cells);
+  }
+
+  if (allRows.length === 0) return null;
+
+  const headers = allRows[0];
+  const dataRows = allRows.slice(1);
+
+  const speechParts: string[] = [];
+  dataRows.forEach((row, rIdx) => {
+    const rowDesc = row
+      .map((c, cIdx) => {
+        const h = headers[cIdx] ? `${headers[cIdx]}: ` : '';
+        return `${h}${latexToSpokenText(c)}`;
+      })
+      .filter((s) => s.length > 0)
+      .join(', ');
+    if (rowDesc) {
+      speechParts.push(`Row ${rIdx + 1}. ${rowDesc}`);
+    }
+  });
+
+  return {
+    headers,
+    rows: dataRows,
+    alignments,
+    tableSpeech: speechParts.length > 0 ? speechParts.join('. ') : headers.join(', '),
+  };
+}
+
+/**
  * Split text into paragraphs and natural sentences with robust protection
  * against false period splits (abbreviations, initials, decimals, domains, ellipses),
  * and full first-class support for Markdown bullet points, task lists, nested lists, and tables.
@@ -404,10 +606,11 @@ export function parseTextIntoDocument(
     headingLevel?: number;
     listMarker?: string;
     indentPx?: number;
-    tableData?: {
-      headers: string[];
-      rows: string[][];
-      alignments?: ('left' | 'center' | 'right')[];
+    tableData?: ParagraphItem['tableData'];
+    mathData?: {
+      rawLatex: string;
+      displayMode: boolean;
+      spokenText?: string;
     };
     preserveLineBreaks?: boolean;
     hasExplicitParagraphBreak?: boolean;
@@ -468,13 +671,84 @@ export function parseTextIntoDocument(
       continue;
     }
 
-    // 4. Markdown Table
+    // 4. Mathematical Display Block ($$...$$ or \[...\] or \begin{equation}...\end{equation})
+    if (/^(\$\$|\\\[|\\begin\{(?:equation|align|gather|matrix|pmatrix|bmatrix)\})/.test(trimmed)) {
+      flushProse();
+      const mathLines: string[] = [];
+      const isSingleLine =
+        (trimmed.startsWith('$$') && trimmed.endsWith('$$') && trimmed.length > 2) ||
+        (trimmed.startsWith('\\[') && trimmed.endsWith('\\]') && trimmed.length > 2) ||
+        (trimmed.startsWith('\\begin{') && trimmed.includes('\\end{'));
+
+      if (isSingleLine) {
+        mathLines.push(trimmed);
+        i++;
+      } else {
+        mathLines.push(line);
+        i++;
+        while (i < lines.length) {
+          const nextL = lines[i];
+          mathLines.push(nextL);
+          i++;
+          if (/\$\$|\\\]|\\end\{(?:equation|align|gather|matrix|pmatrix|bmatrix)\}/.test(nextL.trim())) {
+            break;
+          }
+        }
+      }
+
+      const fullMathBlock = mathLines.join('\n').trim();
+      const cleanLatex = fullMathBlock
+        .replace(/^\$\$|\$\$$|^\\\[|\\\]$/g, '')
+        .trim();
+      const spokenMath = latexToSpokenText(cleanLatex);
+
+      rawParagraphs.push({
+        text: spokenMath || 'Mathematical expression',
+        blockType: 'math',
+        mathData: {
+          rawLatex: cleanLatex,
+          displayMode: true,
+          spokenText: spokenMath,
+        },
+      });
+      continue;
+    }
+
+    // 5. HTML Table: <table ...>...</table>
+    if (/<table\b/i.test(trimmed)) {
+      flushProse();
+      const tableLines: string[] = [];
+      while (i < lines.length) {
+        tableLines.push(lines[i]);
+        if (/<\/table>/i.test(lines[i])) {
+          i++;
+          break;
+        }
+        i++;
+      }
+      const htmlTableStr = tableLines.join('\n');
+      const parsedTable = parseHtmlTable(htmlTableStr);
+      if (parsedTable) {
+        rawParagraphs.push({
+          text: parsedTable.tableSpeech,
+          blockType: 'table',
+          tableData: {
+            headers: parsedTable.headers,
+            rows: parsedTable.rows,
+            alignments: parsedTable.alignments,
+          },
+        });
+        continue;
+      }
+    }
+
+    // 6. Markdown Table
     // A table starts with a row containing pipes, followed by a delimiter row: | --- | :---: | ---: |
     const isPotentialTableHeader = trimmed.includes('|');
     const nextLineTrimmed = i + 1 < lines.length ? lines[i + 1].trim() : '';
     const isDelimiterRow =
       nextLineTrimmed.includes('|') &&
-      /^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?$/.test(nextLineTrimmed);
+      /^\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)+\|?$/.test(nextLineTrimmed);
 
     if (isPotentialTableHeader && isDelimiterRow) {
       flushProse();
@@ -482,12 +756,11 @@ export function parseTextIntoDocument(
       const delimiterLine = nextLineTrimmed;
       i += 2; // skip header and delimiter
 
-      // Parse headers
-      const rawHeaderCells = headerLine.replace(/^\||\|$/g, '').split('|');
-      const headers = rawHeaderCells.map((h) => h.trim());
+      // Parse headers with robust cell splitting
+      const headers = splitTableCells(headerLine);
 
       // Parse alignments from delimiter
-      const rawDelimiterCells = delimiterLine.replace(/^\||\|$/g, '').split('|');
+      const rawDelimiterCells = splitTableCells(delimiterLine);
       const alignments: ('left' | 'center' | 'right')[] = rawDelimiterCells.map((d) => {
         const dTrim = d.trim();
         if (dTrim.startsWith(':') && dTrim.endsWith(':')) return 'center';
@@ -499,8 +772,7 @@ export function parseTextIntoDocument(
       const rows: string[][] = [];
       while (i < lines.length && lines[i].trim().includes('|') && lines[i].trim().length > 0) {
         const rowLine = lines[i].trim();
-        const rawCells = rowLine.replace(/^\||\|$/g, '').split('|');
-        const cells = rawCells.map((c) => c.trim());
+        const cells = splitTableCells(rowLine);
         // Pad cells if fewer than headers
         while (cells.length < headers.length) {
           cells.push('');
@@ -515,7 +787,7 @@ export function parseTextIntoDocument(
         const rowDesc = row
           .map((c, cIdx) => {
             const h = headers[cIdx] ? `${headers[cIdx]}: ` : '';
-            return `${h}${c}`;
+            return `${h}${latexToSpokenText(c)}`;
           })
           .filter((s) => s.length > 0)
           .join(', ');
@@ -541,7 +813,62 @@ export function parseTextIntoDocument(
       continue;
     }
 
-    // 5. Headings: # Heading 1 to ###### Heading 6
+    // 6b. Delimiterless Truth Table from lines (e.g. plain text or PDF lines)
+    const truthTableCheck = detectTruthTableFromLines(lines, i);
+    if (truthTableCheck && truthTableCheck.table.rows.length >= 2) {
+      flushProse();
+      const { table, consumedCount } = truthTableCheck;
+      if (table.title) {
+        rawParagraphs.push({
+          text: table.title,
+          blockType: 'heading',
+          headingLevel: 3,
+        });
+      }
+
+      const tableSpeech = table.rows
+        .map((r, rIdx) => formatTruthTableRowSpeech(r, table.headers, rIdx))
+        .join('. ');
+
+      rawParagraphs.push({
+        text: tableSpeech,
+        blockType: 'table',
+        tableData: {
+          headers: table.headers,
+          rows: table.rows,
+          alignments: table.alignments,
+          isTruthTable: true,
+          title: table.title,
+        },
+      });
+      i += consumedCount;
+      continue;
+    }
+
+    // 6c. Delimiterless general table (pipe or multi-space columns)
+    const genTableCheck = detectGeneralTableFromLines(lines, i);
+    if (genTableCheck && genTableCheck.table.rows.length >= 2) {
+      flushProse();
+      const { table, consumedCount } = genTableCheck;
+      const tableSpeech = table.rows
+        .map((r, rIdx) => formatTruthTableRowSpeech(r, table.headers, rIdx))
+        .join('. ');
+
+      rawParagraphs.push({
+        text: tableSpeech,
+        blockType: 'table',
+        tableData: {
+          headers: table.headers,
+          rows: table.rows,
+          alignments: table.alignments,
+          isTruthTable: table.isTruthTable,
+        },
+      });
+      i += consumedCount;
+      continue;
+    }
+
+    // 7. Headings: # Heading 1 to ###### Heading 6
     const headingMatch = line.match(/^\s*(#{1,6})\s+(.+)$/);
     if (headingMatch) {
       flushProse();
@@ -655,10 +982,31 @@ export function parseTextIntoDocument(
       .replace(/\bmailto:\s*([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})\b/gi, '$1')
       .replace(/\bmailto:\s*/gi, '');
 
-    // For code blocks or dividers, keep sentences as single full block
+    // For code blocks, math blocks, headings, or dividers, keep sentences as single full block
     let finalSentences: string[];
-    if (rawP.blockType === 'code' || rawP.blockType === 'divider') {
+    if (
+      rawP.blockType === 'code' ||
+      rawP.blockType === 'divider' ||
+      rawP.blockType === 'math' ||
+      rawP.blockType === 'heading' ||
+      rawP.blockType === 'chapter-header'
+    ) {
       finalSentences = [pText];
+    } else if (rawP.blockType === 'table') {
+      if (rawP.tableData && rawP.tableData.rows.length > 0) {
+        finalSentences = rawP.tableData.rows.map((row, rIdx) => {
+          const rowDesc = row
+            .map((c, cIdx) => {
+              const h = rawP.tableData?.headers[cIdx] ? `${rawP.tableData.headers[cIdx]}: ` : '';
+              return `${h}${latexToSpokenText(c)}`;
+            })
+            .filter((s) => s.length > 0)
+            .join(', ');
+          return `Row ${rIdx + 1}. ${rowDesc}`;
+        });
+      } else {
+        finalSentences = [pText];
+      }
     } else {
       // Protect abbreviations and decimals before sentence segmentation
       const protectedText = protectNonSentencePeriods(pText);
@@ -691,7 +1039,21 @@ export function parseTextIntoDocument(
     const sentenceItems: SentenceItem[] = [];
 
     finalSentences.forEach((sText, sIndexInP) => {
-      const words = tokenizeWords(sText);
+      let words = tokenizeWords(sText);
+      if (rawP.blockType === 'math' && rawP.mathData) {
+        words = [
+          {
+            word: rawP.mathData.rawLatex,
+            cleanWord: rawP.mathData.spokenText || latexToSpokenText(rawP.mathData.rawLatex),
+            startIndex: 0,
+            endIndex: sText.length,
+            isMath: true,
+            mathLatex: rawP.mathData.rawLatex,
+            mathDisplayMode: true,
+            spokenMath: rawP.mathData.spokenText,
+          },
+        ];
+      }
 
       const sentenceItem: SentenceItem = {
         id: `p-${pIndex}-s-${sIndexInP}`,
@@ -700,6 +1062,7 @@ export function parseTextIntoDocument(
         sentenceIndexInParagraph: sIndexInP,
         text: sText,
         words,
+        hasMath: words.some((w) => w.isMath) || rawP.blockType === 'math',
       };
 
       sentenceItems.push(sentenceItem);
@@ -717,6 +1080,7 @@ export function parseTextIntoDocument(
       listMarker: rawP.listMarker,
       indentPx: rawP.indentPx,
       tableData: rawP.tableData,
+      mathData: rawP.mathData,
       preserveLineBreaks: rawP.preserveLineBreaks,
       hasExplicitParagraphBreak: rawP.hasExplicitParagraphBreak,
     });
@@ -748,6 +1112,7 @@ export function createDocumentFromParagraphs(
     docNavigation?: ArticleDocument['docNavigation'];
     metadataDetails?: ArticleDocument['metadataDetails'];
     rawContent?: string;
+    tableOfContents?: TocItem[];
   } = {}
 ): ArticleDocument {
   // Reconcile prematurely broken paragraphs and sentences across page boundaries or margin overflows
@@ -784,6 +1149,42 @@ export function createDocumentFromParagraphs(
   const id = metadata.id || `doc-${now}-${Math.random().toString(36).substring(2, 7)}`;
   const title = metadata.title || 'Untitled Document';
 
+  // If table of contents provided, ensure targetSentenceIndex is resolved if targetParagraphIndex exists
+  let finalToc: TocItem[] | undefined = metadata.tableOfContents?.map((item) => {
+    if (item.targetParagraphIndex !== undefined && normalizedParagraphs[item.targetParagraphIndex]) {
+      const targetP = normalizedParagraphs[item.targetParagraphIndex];
+      const sIdx = targetP.sentences[0]?.globalIndex;
+      return {
+        ...item,
+        targetSentenceIndex: sIdx !== undefined ? sIdx : item.targetSentenceIndex,
+      };
+    }
+    return item;
+  });
+
+  // If no explicit TOC was provided, build TOC from headings or chapter headers if multiple exist
+  if (!finalToc || finalToc.length === 0) {
+    const headingToc: TocItem[] = [];
+    normalizedParagraphs.forEach((p, pIdx) => {
+      if ((p.isHeading || p.blockType === 'chapter-header') && p.rawText.trim().length > 0) {
+        const cleanHeading = (p.chapterTitle || p.rawText).replace(/^#+\s*/, '').trim();
+        if (cleanHeading.length > 0 && cleanHeading.length < 120) {
+          headingToc.push({
+            id: `toc-${pIdx}`,
+            title: cleanHeading,
+            targetParagraphIndex: pIdx,
+            targetSentenceIndex: p.sentences[0]?.globalIndex,
+            level: p.headingLevel || 1,
+            pageNumber: p.pageNumber,
+          });
+        }
+      }
+    });
+    if (headingToc.length >= 2) {
+      finalToc = headingToc;
+    }
+  }
+
   return {
     id,
     title,
@@ -801,6 +1202,7 @@ export function createDocumentFromParagraphs(
     favorite: false,
     docNavigation: metadata.docNavigation,
     metadataDetails: metadata.metadataDetails,
+    tableOfContents: finalToc && finalToc.length > 0 ? finalToc : undefined,
   };
 }
 

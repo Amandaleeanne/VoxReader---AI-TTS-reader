@@ -8,7 +8,6 @@ import {
   Check,
   X,
   Key,
-  ShieldCheck,
   Zap,
   ChevronDown,
   ChevronUp,

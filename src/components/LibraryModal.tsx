@@ -1,17 +1,12 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import {
   Bookmark,
-  BookmarkCheck,
   Search,
   Trash2,
   BookOpen,
   X,
-  ExternalLink,
-  Sparkles,
   Download,
   Upload,
-  Calendar,
-  Layers,
   ArrowRight,
 } from 'lucide-react';
 import { ArticleDocument } from '../types';
@@ -26,47 +21,23 @@ interface LibraryModalProps {
   isOpen: boolean;
   onClose: () => void;
   currentArticleId?: string;
+  articles: ArticleDocument[];
   onSelectArticle: (article: ArticleDocument, startSentenceIndex?: number) => void;
-  onArticlesChange?: (articles: ArticleDocument[]) => void;
+  onArticlesChange: (articles: ArticleDocument[]) => void;
 }
 
 export const LibraryModal: React.FC<LibraryModalProps> = ({
   isOpen,
   onClose,
   currentArticleId,
+  articles,
   onSelectArticle,
   onArticlesChange,
 }) => {
-  const [articles, setArticles] = useState<ArticleDocument[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterFavorites, setFilterFavorites] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [importMessage, setImportMessage] = useState<string | null>(null);
-
-  // Load articles - only display loading screen on initial open when list is empty
-  const loadArticles = async (showSpinner = false) => {
-    if (showSpinner) {
-      setIsLoading(true);
-    }
-    try {
-      const list = await getAllArticlesFromStorage();
-      setArticles(list);
-      onArticlesChange?.(list);
-    } catch (err) {
-      console.error('Failed to load library:', err);
-    } finally {
-      if (showSpinner) {
-        setIsLoading(false);
-      }
-    }
-  };
-
-  useEffect(() => {
-    if (isOpen) {
-      loadArticles(articles.length === 0);
-    }
-  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -74,14 +45,14 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
   const handleToggleFavorite = async (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
     const updated = articles.map((a) => (a.id === id ? { ...a, favorite: !a.favorite } : a));
-    setArticles(updated);
-    onArticlesChange?.(updated);
+    onArticlesChange(updated);
 
     try {
       await toggleArticleFavorite(id);
     } catch (err) {
       console.error('Failed to toggle favorite:', err);
-      loadArticles(false);
+      const reloaded = await getAllArticlesFromStorage();
+      onArticlesChange(reloaded);
     }
   };
 
@@ -91,16 +62,15 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
     if (deletingId === id) {
       // Optimistic instant removal from UI
       const updated = articles.filter((a) => a.id !== id);
-      setArticles(updated);
-      onArticlesChange?.(updated);
+      onArticlesChange(updated);
       setDeletingId(null);
 
       try {
         await deleteArticleFromStorage(id);
       } catch (err) {
         console.error('Failed to delete article:', err);
-        // Rollback on error
-        loadArticles(false);
+        const reloaded = await getAllArticlesFromStorage();
+        onArticlesChange(reloaded);
       }
     } else {
       setDeletingId(id);
@@ -135,7 +105,8 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
               await saveArticleToStorage(doc);
             }
           }
-          await loadArticles();
+          const reloaded = await getAllArticlesFromStorage();
+          onArticlesChange(reloaded);
           setImportMessage(`Imported ${imported.length} articles successfully.`);
         }
       } catch (err) {
@@ -237,9 +208,7 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
 
         {/* Article List */}
         <div className="p-6 overflow-y-auto space-y-3 flex-1">
-          {isLoading ? (
-            <div className="py-12 text-center text-sm text-neutral-400">Loading library...</div>
-          ) : filteredArticles.length === 0 ? (
+          {filteredArticles.length === 0 ? (
             <div className="py-12 text-center flex flex-col items-center gap-2">
               <BookOpen className="w-10 h-10 text-neutral-300 dark:text-neutral-700" />
               <p className="text-sm font-semibold text-neutral-600 dark:text-neutral-400">

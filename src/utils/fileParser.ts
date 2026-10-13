@@ -9,7 +9,13 @@ import {
   unprotectPeriods,
   reconcileBrokenParagraphs,
 } from './textParser';
-import { ArticleDocument, ParagraphItem, SentenceItem, DocumentMetadataDetails, WordToken } from '../types';
+import { ArticleDocument, ParagraphItem, SentenceItem, DocumentMetadataDetails, WordToken, TocItem } from '../types';
+import {
+  detectPdfFiguresAndTables,
+  capturePdfFigureCrops,
+  formatTruthTableRowSpeech,
+  PdfLineItem,
+} from './tableDetector';
 
 // Configure pdfjs worker to a reliable CDN fallback or standard module worker
 if (typeof window !== 'undefined') {
@@ -24,6 +30,7 @@ export interface ParsedFileResult {
   fileType: 'pdf' | 'epub' | 'text' | 'markdown';
   paragraphs?: ParagraphItem[];
   metadataDetails?: DocumentMetadataDetails;
+  tableOfContents?: TocItem[];
 }
 
 export interface BinaryFilePayload {
@@ -42,6 +49,21 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/**
+ * Normalizes math font encoding artifacts from PDF / TeX symbol fonts:
+ * e.g. ¼ -> =, ð -> (, Þ -> ), þ -> +, ¨ -> ¯, . . . -> ...
+ */
+export function cleanPdfMathSymbols(text: string): string {
+  if (!text) return '';
+  return text
+    .replace(/¼/g, '=')
+    .replace(/ð/g, '(')
+    .replace(/Þ/g, ')')
+    .replace(/þ/g, '+')
+    .replace(/\.\s*\.\s*\./g, '...')
+    .replace(/ {2,}/g, ' ');
 }
 
 /**
@@ -133,6 +155,7 @@ interface PdfTextLine {
   maxX: number;
   posY: number;
   hasParagraphChar?: boolean;
+  items?: PdfLineItem[];
 }
 
 /**
@@ -187,6 +210,14 @@ export async function parsePdfFile(file: File): Promise<ParsedFileResult> {
       // Ignore metadata parsing error
     }
 
+    // Extract PDF outline / table of contents
+    let rawPdfOutline: any[] = [];
+    try {
+      rawPdfOutline = (await pdf.getOutline()) || [];
+    } catch {
+      // Outline parsing may not be available on all PDFs
+    }
+
     let paragraphCounter = 0;
 
     for (let pageNum = 1; pageNum <= numPages; pageNum++) {
@@ -226,39 +257,98 @@ export async function parsePdfFile(file: File): Promise<ParsedFileResult> {
         return xA - xB; // left to right
       });
 
-      // Cluster items into lines
-      const lines: PdfTextLine[] = [];
-      let currentLineItems: any[] = [];
-      let currentLineY: number | null = null;
+      // Cluster items into lines using adaptive baseline binning to properly handle
+      // superscripts (e.g. 2^n), subscripts (e.g. v1, vn), and mathematical symbols.
+      interface LineBin {
+        posY: number;
+        dominantFontSize: number;
+        items: any[];
+      }
+      const lineBins: LineBin[] = [];
 
-      const flushLine = () => {
-        if (currentLineItems.length === 0 || currentLineY === null) return;
-        currentLineItems.sort((a, b) => (a.transform ? a.transform[4] : 0) - (b.transform ? b.transform[4] : 0));
+      for (const item of rawItems) {
+        const y = item.transform ? item.transform[5] : 0;
+        const fs = Math.abs((item.transform ? item.transform[3] : 0) || item.height || 10);
+        let matchedBin: LineBin | null = null;
+        for (const bin of lineBins) {
+          if (Math.abs(bin.posY - y) <= 4.8) {
+            matchedBin = bin;
+            break;
+          }
+        }
+        if (matchedBin) {
+          matchedBin.items.push(item);
+          if (fs > matchedBin.dominantFontSize) {
+            matchedBin.posY = y;
+            matchedBin.dominantFontSize = fs;
+          }
+        } else {
+          lineBins.push({ posY: y, dominantFontSize: fs, items: [item] });
+        }
+      }
+
+      // Sort bins top-to-bottom
+      lineBins.sort((a, b) => b.posY - a.posY);
+
+      const lines: PdfTextLine[] = [];
+
+      for (const bin of lineBins) {
+        bin.items.sort((a, b) => (a.transform ? a.transform[4] : 0) - (b.transform ? b.transform[4] : 0));
 
         let lineText = '';
         let lastRight = -1;
+        const lineItems: PdfLineItem[] = [];
 
-        for (const item of currentLineItems) {
+        for (const item of bin.items) {
           const x = item.transform ? item.transform[4] : 0;
-          if (lastRight > 0 && x - lastRight > 2.5) {
-            lineText += ' ';
+          const w = item.width || 0;
+          let str = item.str || '';
+          const fs = Math.abs((item.transform ? item.transform[3] : 0) || item.height || 10);
+
+          // Detect superscripts and subscripts relative to the line baseline
+          const isSuper = item.transform && item.transform[5] - bin.posY > 1.8 && fs < bin.dominantFontSize * 0.9;
+          const isSub = item.transform && bin.posY - item.transform[5] > 1.2 && fs < bin.dominantFontSize * 0.9;
+
+          if (lastRight > 0) {
+            const gap = x - lastRight;
+            if (gap > 14) {
+              lineText += '  ';
+            } else if (gap > 2.5 && !isSuper && !isSub) {
+              lineText += ' ';
+            }
           }
-          lineText += item.str;
-          lastRight = x + (item.width || 0);
+
+          if (isSuper && /^[0-9a-zA-Z]$/.test(str.trim())) {
+            str = `^${str.trim()}`;
+          } else if (isSub && /^[0-9a-zA-Z]$/.test(str.trim())) {
+            str = `_${str.trim()}`;
+          }
+
+          lineText += str;
+          lastRight = Math.max(lastRight, x + w);
+
+          if (str.trim().length > 0) {
+            lineItems.push({
+              str: str.trim(),
+              x,
+              width: w,
+              y: bin.posY,
+              fontSize: fs,
+              isBold: /bold|black|heavy|semibold/i.test(item.fontName || ''),
+            });
+          }
         }
 
-        lineText = lineText.trim();
+        // Clean up math symbols & PDF TeX font artifacts
+        lineText = cleanPdfMathSymbols(lineText.trim());
+
         if (lineText.length > 0) {
-          const fontSizes = currentLineItems.map((i) => Math.abs((i.transform ? i.transform[3] : 0) || i.height || 12));
+          const fontSizes = bin.items.map((i) => Math.abs((i.transform ? i.transform[3] : 0) || i.height || 12));
           const maxFontSize = Math.max(...fontSizes);
-          const isBold = currentLineItems.some((i) =>
-            /bold|black|heavy|semibold/i.test(i.fontName || '')
-          );
-          const isItalic = currentLineItems.some((i) =>
-            /italic|oblique/i.test(i.fontName || '')
-          );
-          const minX = Math.min(...currentLineItems.map((i) => (i.transform ? i.transform[4] : 0)));
-          const maxX = Math.max(...currentLineItems.map((i) => (i.transform ? i.transform[4] : 0) + (i.width || 0)));
+          const isBold = bin.items.some((i) => /bold|black|heavy|semibold/i.test(i.fontName || ''));
+          const isItalic = bin.items.some((i) => /italic|oblique/i.test(i.fontName || ''));
+          const minX = Math.min(...bin.items.map((i) => (i.transform ? i.transform[4] : 0)));
+          const maxX = Math.max(...bin.items.map((i) => (i.transform ? i.transform[4] : 0) + (i.width || 0)));
           const lineWidth = maxX - minX;
           const isCentered =
             lineWidth > 40 &&
@@ -278,8 +368,9 @@ export async function parsePdfFile(file: File): Promise<ParsedFileResult> {
                   isCentered,
                   minX,
                   maxX,
-                  posY: currentLineY,
+                  posY: bin.posY,
                   hasParagraphChar: true,
+                  items: lineItems,
                 });
               }
             }
@@ -292,28 +383,13 @@ export async function parsePdfFile(file: File): Promise<ParsedFileResult> {
               isCentered,
               minX,
               maxX,
-              posY: currentLineY,
+              posY: bin.posY,
               hasParagraphChar: hasParaChar,
+              items: lineItems,
             });
           }
         }
-
-        currentLineItems = [];
-        currentLineY = null;
-      };
-
-      for (const item of rawItems) {
-        const y = item.transform ? item.transform[5] : 0;
-        if (currentLineY === null || Math.abs(y - currentLineY) <= 3.5) {
-          currentLineItems.push(item);
-          currentLineY = y;
-        } else {
-          flushLine();
-          currentLineItems.push(item);
-          currentLineY = y;
-        }
       }
-      flushLine();
 
       if (lines.length === 0) {
         try { page.cleanup(); } catch {}
@@ -438,7 +514,86 @@ export async function parsePdfFile(file: File): Promise<ParsedFileResult> {
       const pageLeftMargin = regularLines.length > 0 ? Math.min(...regularLines.map((l) => l.minX)) : 40;
       const pageRightMargin = regularLines.length > 0 ? Math.max(...regularLines.map((l) => l.maxX)) : 550;
 
+      // Detect figures and tables on this page
+      const detectedFiguresAndTables = detectPdfFiguresAndTables(lines);
+      // Capture high-resolution visual crops from the page canvas
+      const figureCrops = await capturePdfFigureCrops(page, detectedFiguresAndTables);
+
       for (let i = 0; i < lines.length; i++) {
+        // Check if index matches a detected figure or table
+        const matched = detectedFiguresAndTables.find((f) => f.lineIndexStart === i);
+        if (matched) {
+          flushParagraph();
+
+          const cropUrl = figureCrops.get(matched.captionLineIndex);
+
+          if (matched.type === 'table' && matched.tableData) {
+            const tblData = matched.tableData;
+            const tableSpeech = tblData.rows
+              .map((r, rIdx) => formatTruthTableRowSpeech(r, tblData.headers, rIdx))
+              .join('. ');
+
+            const rowSentences: SentenceItem[] = tblData.rows.map((row, rIdx) => {
+              const rowSpeech = formatTruthTableRowSpeech(row, tblData.headers, rIdx);
+              return {
+                id: `pdf-tbl-${paragraphCounter}-s-${rIdx}`,
+                globalIndex: 0,
+                paragraphIndex: paragraphCounter,
+                sentenceIndexInParagraph: rIdx,
+                text: rowSpeech,
+                words: tokenizeWords(rowSpeech),
+              };
+            });
+
+            allParagraphs.push({
+              id: `pdf-tbl-${paragraphCounter}`,
+              paragraphIndex: paragraphCounter++,
+              sentences: rowSentences,
+              rawText: tableSpeech,
+              blockType: 'table',
+              tableData: {
+                headers: tblData.headers,
+                rows: tblData.rows,
+                alignments: tblData.alignments,
+                isTruthTable: tblData.isTruthTable,
+                title: matched.captionText,
+                imageUrl: cropUrl,
+              },
+              pageNumber: pageNum,
+            });
+            extractedTextParts.push(tableSpeech);
+          } else {
+            // Figure block (diagram, circuit schematic, screenshot, illustration)
+            const figSentenceText = matched.captionText;
+            allParagraphs.push({
+              id: `pdf-fig-${paragraphCounter}`,
+              paragraphIndex: paragraphCounter++,
+              sentences: [
+                {
+                  id: `pdf-fig-${paragraphCounter}-s-0`,
+                  globalIndex: 0,
+                  paragraphIndex: paragraphCounter,
+                  sentenceIndexInParagraph: 0,
+                  text: figSentenceText,
+                  words: tokenizeWords(figSentenceText),
+                },
+              ],
+              rawText: figSentenceText,
+              blockType: 'figure',
+              figureData: {
+                imageUrl: cropUrl || '',
+                caption: matched.captionText,
+                figureNumber: matched.figureNumber,
+              },
+              pageNumber: pageNum,
+            });
+            extractedTextParts.push(figSentenceText);
+          }
+
+          i = matched.lineIndexEnd - 1;
+          continue;
+        }
+
         const line = lines[i];
         if (currentParagraphLines.length === 0) {
           currentParagraphLines.push(line);
@@ -519,6 +674,87 @@ export async function parsePdfFile(file: File): Promise<ParsedFileResult> {
     const reconciledParagraphs = reconcileBrokenParagraphs(allParagraphs);
     const fullContent = extractedTextParts.join('\n\n');
 
+    // Build PDF Table of Contents from outline items or fallback to detected headings/pages
+    const tableOfContents: TocItem[] = [];
+    if (rawPdfOutline && rawPdfOutline.length > 0) {
+      const processOutlineItems = async (items: any[], level = 1) => {
+        for (const item of items) {
+          if (!item.title) continue;
+          let targetPageNum: number | undefined;
+          try {
+            if (typeof item.dest === 'string') {
+              const destIndex = await pdf.getDestination(item.dest);
+              if (destIndex && destIndex[0]) {
+                const pageIdx = await pdf.getPageIndex(destIndex[0]);
+                targetPageNum = pageIdx + 1;
+              }
+            } else if (Array.isArray(item.dest) && item.dest[0]) {
+              const pageIdx = await pdf.getPageIndex(item.dest[0]);
+              targetPageNum = pageIdx + 1;
+            }
+          } catch {
+            // Ignore destination lookup failure
+          }
+
+          // Find first paragraph matching this page
+          let targetPIndex: number | undefined;
+          if (targetPageNum !== undefined) {
+            const pIdx = reconciledParagraphs.findIndex(
+              (p) => p.pageNumber === targetPageNum && p.blockType !== 'page-break'
+            );
+            if (pIdx !== -1) {
+              targetPIndex = pIdx;
+            } else {
+              const pageBreakIdx = reconciledParagraphs.findIndex(
+                (p) => p.pageNumber === targetPageNum
+              );
+              if (pageBreakIdx !== -1) targetPIndex = pageBreakIdx;
+            }
+          }
+
+          // If no page dest was resolved, search for matching heading text
+          if (targetPIndex === undefined) {
+            const cleanTitle = item.title.trim().toLowerCase();
+            const matchedPIdx = reconciledParagraphs.findIndex((p) =>
+              p.rawText.toLowerCase().includes(cleanTitle)
+            );
+            if (matchedPIdx !== -1) {
+              targetPIndex = matchedPIdx;
+              targetPageNum = reconciledParagraphs[matchedPIdx].pageNumber;
+            }
+          }
+
+          tableOfContents.push({
+            id: `pdf-toc-${tableOfContents.length}`,
+            title: item.title.trim(),
+            targetParagraphIndex: targetPIndex,
+            pageNumber: targetPageNum,
+            level,
+          });
+
+          if (item.items && item.items.length > 0) {
+            await processOutlineItems(item.items, level + 1);
+          }
+        }
+      };
+      await processOutlineItems(rawPdfOutline);
+    }
+
+    // If PDF has no embedded outline, generate TOC from high-level headings or multi-page structure
+    if (tableOfContents.length === 0) {
+      reconciledParagraphs.forEach((p, idx) => {
+        if (p.isHeading && (p.headingLevel === 1 || p.headingLevel === 2) && p.rawText.length > 2 && p.rawText.length < 80) {
+          tableOfContents.push({
+            id: `pdf-toc-${tableOfContents.length}`,
+            title: p.rawText.trim(),
+            targetParagraphIndex: idx,
+            pageNumber: p.pageNumber,
+            level: p.headingLevel || 1,
+          });
+        }
+      });
+    }
+
     return {
       title: docTitle,
       author: docAuthor,
@@ -533,6 +769,7 @@ export async function parsePdfFile(file: File): Promise<ParsedFileResult> {
         subject: pdfSubject,
         publicationDate: creationDate,
       },
+      tableOfContents: tableOfContents.length > 0 ? tableOfContents : undefined,
     };
   } catch (err: any) {
     console.warn('PDF.js structured parsing failed, falling back to basic extraction:', err);
@@ -974,6 +1211,19 @@ export async function parseEpubFile(file: File): Promise<ParsedFileResult> {
 
   const fullContent = allParagraphs.map((p) => p.rawText).join('\n\n');
 
+  // Build Table of Contents for EPUB based on chapter headers and detected chapters
+  const tableOfContents: TocItem[] = [];
+  allParagraphs.forEach((p, pIdx) => {
+    if (p.blockType === 'chapter-header') {
+      tableOfContents.push({
+        id: `epub-toc-${tableOfContents.length}`,
+        title: p.chapterTitle || p.rawText.trim(),
+        targetParagraphIndex: pIdx,
+        level: 1,
+      });
+    }
+  });
+
   return {
     title: bookTitle,
     author: bookAuthor,
@@ -987,5 +1237,6 @@ export async function parseEpubFile(file: File): Promise<ParsedFileResult> {
       chapters: chaptersFound,
       fileSizeFormatted: formatBytes(file.size),
     },
+    tableOfContents: tableOfContents.length > 0 ? tableOfContents : undefined,
   };
 }

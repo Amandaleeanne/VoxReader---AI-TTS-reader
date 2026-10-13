@@ -4,14 +4,10 @@ import {
   Plus,
   Bookmark,
   BookmarkCheck,
-  Sliders,
   Type,
-  Wifi,
   WifiOff,
   Sparkles,
-  HelpCircle,
   Keyboard,
-  ExternalLink,
 } from 'lucide-react';
 import { ArticleDocument, VoiceSettings } from '../types';
 

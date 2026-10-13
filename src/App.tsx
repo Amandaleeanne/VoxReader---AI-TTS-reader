@@ -48,6 +48,7 @@ const DEFAULT_DISPLAY_SETTINGS: DisplaySettings = {
   textAlign: 'left',
   focusMode: false,
   bionicReading: false,
+  showPageBreaks: false, // Default is off (Seamless mode)
 };
 
 export default function App() {
@@ -411,6 +412,9 @@ export default function App() {
         displaySettings={displaySettings}
         onSentenceClick={handleJumpToSentence}
         onNavigateToUrl={handleNavigateToUrl}
+        onTogglePageBreaks={() =>
+          setDisplaySettings((prev) => ({ ...prev, showPageBreaks: !prev.showPageBreaks }))
+        }
       />
 
       {/* Persistent Bottom Playback Bar */}
@@ -448,6 +452,7 @@ export default function App() {
         isOpen={isLibraryOpen}
         onClose={() => setIsLibraryOpen(false)}
         currentArticleId={document.id}
+        articles={savedArticles}
         onSelectArticle={handleSelectFromLibrary}
         onArticlesChange={setSavedArticles}
       />

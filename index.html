@@ -12,6 +12,21 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Crimson+Pro:ital,wght@0,400;0,600;1,400&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.css" crossorigin="anonymous">
+    <script>
+      // Gracefully suppress expected WebSocket HMR connection errors in preview environment
+      window.addEventListener('error', function(e) {
+        if (e.message && (e.message.includes('WebSocket') || e.message.includes('createWebSocketModuleRunnerTransport') || e.filename?.includes('@vite/client'))) {
+          e.stopImmediatePropagation();
+        }
+      }, true);
+      window.addEventListener('unhandledrejection', function(e) {
+        var str = String(e.reason || '');
+        if (str.includes('WebSocket') || str.includes('createWebSocketModuleRunnerTransport')) {
+          e.preventDefault();
+        }
+      });
+    </script>
   </head>
   <body class="bg-neutral-50 text-neutral-900 antialiased selection:bg-amber-200 selection:text-neutral-900">
     <div id="root"></div>

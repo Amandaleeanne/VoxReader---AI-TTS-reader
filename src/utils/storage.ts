@@ -1,5 +1,7 @@
 import { ArticleDocument } from '../types';
-import { tokenizeWords, decodeHtmlAndNormalizeQuotes } from './textParser';
+import { tokenizeWords, decodeHtmlAndNormalizeQuotes, parseTextIntoDocument, reconcileBrokenParagraphs } from './textParser';
+import { SAMPLE_ARTICLES } from '../data/sampleArticles';
+import { detectMashedTruthTableInParagraphText } from './tableDetector';
 
 const DB_NAME = 'voxread_db';
 const DB_VERSION = 1;
@@ -14,7 +16,61 @@ const ACTIVE_DOC_ID_KEY = 'voxread_active_doc_id';
  */
 export function sanitizeStoredArticle(doc: ArticleDocument): ArticleDocument {
   if (!doc || !doc.paragraphs) return doc;
+
+  // If this is a sample article that was updated with math/tables, sync with latest version
+  if (doc.id && doc.id.startsWith('sample-')) {
+    const sample = SAMPLE_ARTICLES.find((s) => s.id === doc.id);
+    if (sample && (sample.content !== doc.rawContent || !doc.paragraphs.some((p) => p.blockType === 'table' || p.blockType === 'math'))) {
+      const reParsed = parseTextIntoDocument(sample.content, {
+        title: sample.title,
+        author: sample.author,
+        fileType: 'manual',
+        id: sample.id,
+        docNavigation: doc.docNavigation,
+      });
+      reParsed.lastReadSentenceIndex = doc.lastReadSentenceIndex || 0;
+      reParsed.favorite = doc.favorite;
+      saveArticleToStorage(reParsed).catch(() => {});
+      return reParsed;
+    }
+  }
+
+  // If document has unparsed truth tables, markdown tables or display math, re-parse
+  if (
+    doc.rawContent &&
+    (!doc.paragraphs.some((p) => p.blockType === 'table') &&
+      (doc.rawContent.includes('|') ||
+        detectMashedTruthTableInParagraphText(doc.rawContent) ||
+        /\b(T\s+T\s+T|True\s+True|1\s+0\s+0)\b/i.test(doc.rawContent))) ||
+    (doc.rawContent && doc.rawContent.includes('$$') && !doc.paragraphs.some((p) => p.blockType === 'math'))
+  ) {
+    const reParsed = parseTextIntoDocument(doc.rawContent, {
+      title: doc.title,
+      author: doc.author,
+      domain: doc.domain,
+      sourceUrl: doc.sourceUrl,
+      fileType: doc.fileType,
+      id: doc.id,
+      docNavigation: doc.docNavigation,
+      metadataDetails: doc.metadataDetails,
+    });
+    reParsed.lastReadSentenceIndex = doc.lastReadSentenceIndex || 0;
+    reParsed.favorite = doc.favorite;
+    saveArticleToStorage(reParsed).catch(() => {});
+    return reParsed;
+  }
+
   let changed = false;
+
+  // If document contains paragraphs with mashed truth tables, reconcile them into structured tables
+  const hasMashedTruthTable = doc.paragraphs.some(
+    (p) => p.blockType === 'paragraph' && !p.tableData && detectMashedTruthTableInParagraphText(p.rawText)
+  );
+  if (hasMashedTruthTable) {
+    const updatedParagraphs = reconcileBrokenParagraphs(doc.paragraphs);
+    doc = { ...doc, paragraphs: updatedParagraphs };
+    changed = true;
+  }
 
   const rawCleanTitle = decodeHtmlAndNormalizeQuotes(doc.title || '');
   if (rawCleanTitle !== doc.title) {
@@ -54,7 +110,7 @@ export function sanitizeStoredArticle(doc: ArticleDocument): ArticleDocument {
           changed = true;
         }
 
-        const textHasEntities = /&(?:#\s*\d+|#x[0-9a-f]+|[a-z]+);?|822[01];?|821[67];?/i.test(currentSentenceText);
+        const textHasEntities = /&(?:#\s*\d+|#x[0-9a-f]+|[a-z]+);?|822[01];?|821[67];?|[¼ðÞþ]/i.test(currentSentenceText);
         if (textHasEntities) {
           currentSentenceText = decodeHtmlAndNormalizeQuotes(currentSentenceText);
           changed = true;

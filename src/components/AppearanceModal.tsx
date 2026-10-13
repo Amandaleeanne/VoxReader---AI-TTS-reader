@@ -9,6 +9,7 @@ import {
   AlignJustify,
   AlignCenter,
   Sparkles,
+  FileText,
 } from 'lucide-react';
 import { DisplaySettings } from '../types';
 
@@ -213,7 +214,33 @@ export const AppearanceModal: React.FC<AppearanceModalProps> = ({
           </div>
 
           {/* Cognitive & Focus Toggles */}
-          <div className="space-y-3 pt-3 border-t border-neutral-100 dark:border-neutral-800">
+          <div className="space-y-4 pt-3 border-t border-neutral-100 dark:border-neutral-800">
+            {/* Page Breaks Mode Toggle (Seamless vs Page Break Mode) */}
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-sm font-semibold text-neutral-800 dark:text-neutral-200 flex items-center gap-1.5">
+                  <FileText className="w-4 h-4 text-amber-500" />
+                  <span>Show Page Breaks</span>
+                </div>
+                <div className="text-xs text-neutral-500 dark:text-neutral-400">
+                  {settings.showPageBreaks
+                    ? 'Page break mode (page markers and dividers visible)'
+                    : 'Seamless mode (clean, uninterrupted reading flow)'}
+                </div>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={Boolean(settings.showPageBreaks)}
+                  onChange={(e) =>
+                    onUpdateSettings({ ...settings, showPageBreaks: e.target.checked })
+                  }
+                  className="sr-only peer"
+                />
+                <div className="w-9 h-5 bg-neutral-300 peer-focus:outline-none rounded-full peer dark:bg-neutral-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-neutral-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-amber-500"></div>
+              </label>
+            </div>
+
             {/* Focus Mode */}
             <div className="flex items-center justify-between">
               <div>

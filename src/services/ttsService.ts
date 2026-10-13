@@ -1,5 +1,26 @@
 import { SentenceItem, VoiceSettings, WordToken } from '../types';
 import { decodeHtmlAndNormalizeQuotes } from '../utils/textParser';
+import { latexToSpokenText } from '../utils/mathUtils';
+
+export function prepareSentenceSpokenText(sentence: SentenceItem): string {
+  let text = decodeHtmlAndNormalizeQuotes(sentence.text).replace(
+    /\[([^\]]+)\]\([^\s)]+\)/g,
+    '$1'
+  );
+
+  // Convert display and inline math to fluent spoken text
+  text = text.replace(/(\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\])/g, (_, m) => {
+    return ' ' + latexToSpokenText(m) + ' ';
+  });
+  text = text.replace(
+    /(\\\([\s\S]+?\\\)|\$(?!\s|\d+(?:\.\d+)?(?:\s|$))[^$\n]+?(?<!\s)\$)/g,
+    (_, m) => {
+      return ' ' + latexToSpokenText(m) + ' ';
+    }
+  );
+
+  return text.replace(/\s+/g, ' ').trim();
+}
 
 export interface TTSCallbacks {
   onSentenceChange?: (sentenceIndex: number) => void;
@@ -333,10 +354,7 @@ export class TTSController {
       window.speechSynthesis.cancel();
     }
 
-    const cleanSpokenText = decodeHtmlAndNormalizeQuotes(sentence.text).replace(
-      /\[([^\]]+)\]\([^\s)]+\)/g,
-      '$1'
-    );
+    const cleanSpokenText = prepareSentenceSpokenText(sentence);
     const utterance = new SpeechSynthesisUtterance(cleanSpokenText);
     this.currentUtterance = utterance;
 
@@ -442,9 +460,7 @@ export class TTSController {
 
     let endpoint = '/api/tts/gemini';
     let headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    const cleanSpoken = decodeHtmlAndNormalizeQuotes(sentence.text)
-      .replace(/\[([^\]]+)\]\([^\s)]+\)/g, '$1')
-      .trim();
+    const cleanSpoken = prepareSentenceSpokenText(sentence);
     let body: any = { text: cleanSpoken };
 
     if (this.settings.engine === 'edgetts') {

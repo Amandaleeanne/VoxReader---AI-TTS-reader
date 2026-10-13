@@ -12,6 +12,10 @@ export interface WordToken {
   isCode?: boolean;
   isUnderline?: boolean;
   isStrikethrough?: boolean;
+  isMath?: boolean;
+  mathLatex?: string;
+  mathDisplayMode?: boolean;
+  spokenMath?: string;
   linkUrl?: string;
   hasLineBreakAfter?: boolean; // For preserving exact line breaks in poetry, text, pdf
 }
@@ -27,6 +31,7 @@ export interface SentenceItem {
   isItalic?: boolean;
   isHeading?: boolean;
   headingLevel?: number;
+  hasMath?: boolean;
 }
 
 export type BlockType =
@@ -37,6 +42,8 @@ export type BlockType =
   | 'code'
   | 'list-item'
   | 'table'
+  | 'figure'
+  | 'math'
   | 'page-break'
   | 'divider';
 
@@ -60,11 +67,26 @@ export interface ParagraphItem {
   fontFamilyName?: string; // e.g., 'serif', 'sans', 'mono'
   indentPx?: number; // Left indentation in pixels or ems from PDF minX or CSS
   isPoemOrVerse?: boolean;
+  imageUrl?: string;
+  figureData?: {
+    imageUrl: string;
+    caption?: string;
+    figureNumber?: string;
+    altText?: string;
+  };
   tableData?: {
     headers: string[];
     rows: string[][];
     alignments?: ('left' | 'center' | 'right')[];
+    isTruthTable?: boolean;
+    title?: string;
+    imageUrl?: string;
   }; // For tables in EPUB, Markdown, or PDF
+  mathData?: {
+    rawLatex: string;
+    displayMode: boolean;
+    spokenText?: string;
+  };
   runningHeader?: string;
   runningFooter?: string;
   hasExplicitParagraphBreak?: boolean;
@@ -78,6 +100,15 @@ export interface DocNavigationItem {
 export interface DocNavigation {
   prev?: DocNavigationItem;
   next?: DocNavigationItem;
+}
+
+export interface TocItem {
+  id: string;
+  title: string;
+  targetParagraphIndex?: number;
+  targetSentenceIndex?: number;
+  pageNumber?: number;
+  level?: number;
 }
 
 export interface DocumentMetadataDetails {
@@ -109,6 +140,7 @@ export interface ArticleDocument {
   favorite?: boolean;
   docNavigation?: DocNavigation;
   metadataDetails?: DocumentMetadataDetails;
+  tableOfContents?: TocItem[];
 }
 
 export interface VoiceSettings {
@@ -136,4 +168,5 @@ export interface DisplaySettings {
   textAlign?: 'left' | 'justify' | 'center';
   focusMode: boolean; // Dims non-active sentences slightly to enhance focus
   bionicReading: boolean; // Bold initial letters of words
+  showPageBreaks: boolean; // Seamless mode (false, default) vs Page break mode (true)
 }
