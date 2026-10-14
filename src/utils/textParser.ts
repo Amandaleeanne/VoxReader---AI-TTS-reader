@@ -1,5 +1,7 @@
 import { ParagraphItem, SentenceItem, WordToken, ArticleDocument, TocItem } from '../types';
 import { latexToSpokenText, containsMath } from './mathUtils';
+import { generateFileHashCode } from './fileHasher';
+
 import {
   detectTruthTableFromLines,
   detectGeneralTableFromLines,
@@ -85,12 +87,24 @@ export function decodeHtmlAndNormalizeQuotes(text: string): string {
     }
   });
 
-  // 7. PDF and TeX math font encoding artifacts (equals, parentheses, plus, negation)
+  // 7. PDF and TeX math font encoding artifacts (equals, parentheses, plus, negation, arrows)
   s = s
     .replace(/¼/g, '=')
     .replace(/ð/g, '(')
     .replace(/Þ/g, ')')
-    .replace(/þ/g, '+');
+    .replace(/þ/g, '+')
+    .replace(/\u0002/g, '·')
+    .replace(/¨/g, '¯')
+    .replace(/(\w)\s*!\s*(\w)/g, '$1 → $2')
+    .replace(/2\s*\^\s*n\b/g, '2ⁿ')
+    .replace(/2\s*n\s+(?=possible\s+tuples)/gi, '2ⁿ ')
+    .replace(/\bv\s*_\s*1\b|\bv\s+1\b(?=\s*\.\.\.|\s*\.\s*\.\s*\.)/gi, 'v₁')
+    .replace(/\bv\s*_\s*n\b|\bv\s+n\b(?=\s*\(|\s*\)|\s*,|\s*\.)/gi, 'vₙ')
+    .replace(/\bv\s*_\s*([0-9a-zA-Z])\b/g, (_, ch) => {
+      const subMap: Record<string, string> = { '0': '₀', '1': '₁', '2': '₂', '3': '₃', '4': '₄', '5': '₅', '6': '₆', '7': '₇', '8': '₈', '9': '₉', 'i': 'ᵢ', 'j': 'ⱼ', 'k': 'ₖ', 'n': 'ₙ', 'm': 'ₘ', 'x': 'ₓ' };
+      return subMap[ch] ? `v${subMap[ch]}` : `v_${ch}`;
+    })
+    .replace(/\.\s*\.\s*\./g, '...');
 
   return s;
 }
@@ -1185,6 +1199,19 @@ export function createDocumentFromParagraphs(
     }
   }
 
+  const dataSize =
+    metadata.metadataDetails?.fileSizeBytes ??
+    (metadata.rawContent ? metadata.rawContent.length : totalWordsCounter);
+  const hashCode =
+    metadata.metadataDetails?.hashCode ||
+    generateFileHashCode(title, dataSize);
+
+  const updatedMetadataDetails = {
+    ...metadata.metadataDetails,
+    hashCode,
+    fileSizeBytes: metadata.metadataDetails?.fileSizeBytes ?? dataSize,
+  };
+
   return {
     id,
     title,
@@ -1193,6 +1220,7 @@ export function createDocumentFromParagraphs(
     sourceUrl: metadata.sourceUrl,
     fileType: metadata.fileType || 'manual',
     rawContent: metadata.rawContent || '',
+    hashCode,
     paragraphs: normalizedParagraphs,
     totalSentences: globalSentenceCounter,
     totalWords: totalWordsCounter,
@@ -1201,7 +1229,7 @@ export function createDocumentFromParagraphs(
     lastReadSentenceIndex: 0,
     favorite: false,
     docNavigation: metadata.docNavigation,
-    metadataDetails: metadata.metadataDetails,
+    metadataDetails: updatedMetadataDetails,
     tableOfContents: finalToc && finalToc.length > 0 ? finalToc : undefined,
   };
 }

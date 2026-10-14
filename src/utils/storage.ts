@@ -2,6 +2,8 @@ import { ArticleDocument } from '../types';
 import { tokenizeWords, decodeHtmlAndNormalizeQuotes, parseTextIntoDocument, reconcileBrokenParagraphs } from './textParser';
 import { SAMPLE_ARTICLES } from '../data/sampleArticles';
 import { detectMashedTruthTableInParagraphText } from './tableDetector';
+import { getDocumentHashCode } from './fileHasher';
+
 
 const DB_NAME = 'voxread_db';
 const DB_VERSION = 1;
@@ -86,6 +88,20 @@ export function sanitizeStoredArticle(doc: ArticleDocument): ArticleDocument {
     }
   }
 
+  // Ensure file hashCode is initialized in metadata for O(1) duplicate lookup
+  const computedHash = getDocumentHashCode(doc);
+  if (!doc.hashCode || doc.hashCode !== computedHash) {
+    doc = {
+      ...doc,
+      hashCode: computedHash,
+      metadataDetails: {
+        ...doc.metadataDetails,
+        hashCode: computedHash,
+      },
+    };
+    changed = true;
+  }
+
   const updatedParagraphs = doc.paragraphs.map((p) => {
     let isHeading = p.isHeading;
     let headingLevel = p.headingLevel;
@@ -96,8 +112,31 @@ export function sanitizeStoredArticle(doc: ArticleDocument): ArticleDocument {
       changed = true;
     }
 
+    const cleanRawText = p.rawText ? decodeHtmlAndNormalizeQuotes(p.rawText) : p.rawText;
+    if (cleanRawText !== p.rawText) {
+      changed = true;
+    }
+
+    let updatedTableData = p.tableData;
+    if (p.tableData) {
+      const cleanHeaders = p.tableData.headers.map((h) => decodeHtmlAndNormalizeQuotes(h));
+      const cleanRows = p.tableData.rows.map((row) => row.map((c) => decodeHtmlAndNormalizeQuotes(c)));
+      const cleanTitle = p.tableData.title ? decodeHtmlAndNormalizeQuotes(p.tableData.title) : undefined;
+      updatedTableData = {
+        ...p.tableData,
+        headers: cleanHeaders,
+        rows: cleanRows,
+        title: cleanTitle,
+      };
+      if (JSON.stringify(updatedTableData) !== JSON.stringify(p.tableData)) {
+        changed = true;
+      }
+    }
+
     return {
       ...p,
+      rawText: cleanRawText,
+      tableData: updatedTableData,
       isHeading,
       headingLevel,
       sentences: p.sentences.map((s) => {
@@ -110,7 +149,7 @@ export function sanitizeStoredArticle(doc: ArticleDocument): ArticleDocument {
           changed = true;
         }
 
-        const textHasEntities = /&(?:#\s*\d+|#x[0-9a-f]+|[a-z]+);?|822[01];?|821[67];?|[¼ðÞþ]/i.test(currentSentenceText);
+        const textHasEntities = /&(?:#\s*\d+|#x[0-9a-f]+|[a-z]+);?|822[01];?|821[67];?|[¼ðÞþ]|2\s*\^\s*n\b|2\s*n\s+possible/i.test(currentSentenceText);
         if (textHasEntities) {
           currentSentenceText = decodeHtmlAndNormalizeQuotes(currentSentenceText);
           changed = true;

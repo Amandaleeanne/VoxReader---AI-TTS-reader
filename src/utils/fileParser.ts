@@ -16,6 +16,7 @@ import {
   formatTruthTableRowSpeech,
   PdfLineItem,
 } from './tableDetector';
+import { generateFileHashCode } from './fileHasher';
 
 // Configure pdfjs worker to a reliable CDN fallback or standard module worker
 if (typeof window !== 'undefined') {
@@ -62,9 +63,21 @@ export function cleanPdfMathSymbols(text: string): string {
     .replace(/ð/g, '(')
     .replace(/Þ/g, ')')
     .replace(/þ/g, '+')
+    .replace(/\u0002/g, '·')
+    .replace(/¨/g, '¯')
+    .replace(/(\w)\s*!\s*(\w)/g, '$1 → $2')
+    .replace(/2\s*\^\s*n\b/g, '2ⁿ')
+    .replace(/2\s*n\s+(?=possible\s+tuples)/gi, '2ⁿ ')
+    .replace(/\bv\s*_\s*1\b|\bv\s+1\b(?=\s*\.\.\.|\s*\.\s*\.\s*\.)/gi, 'v₁')
+    .replace(/\bv\s*_\s*n\b|\bv\s+n\b(?=\s*\(|\s*\)|\s*,|\s*\.)/gi, 'vₙ')
+    .replace(/\bv\s*_\s*([0-9a-zA-Z])\b/g, (_, ch) => {
+      const subMap: Record<string, string> = { '0': '₀', '1': '₁', '2': '₂', '3': '₃', '4': '₄', '5': '₅', '6': '₆', '7': '₇', '8': '₈', '9': '₉', 'i': 'ᵢ', 'j': 'ⱼ', 'k': 'ₖ', 'n': 'ₙ', 'm': 'ₘ', 'x': 'ₓ' };
+      return subMap[ch] ? `v${subMap[ch]}` : `v_${ch}`;
+    })
     .replace(/\.\s*\.\s*\./g, '...')
     .replace(/ {2,}/g, ' ');
 }
+
 
 /**
  * Process a binary PDF or ePub file response from the server,
@@ -141,6 +154,8 @@ export async function parseTextFile(file: File): Promise<ParsedFileResult> {
     paragraphs: doc.paragraphs,
     metadataDetails: {
       fileSizeFormatted: formatBytes(file.size),
+      fileSizeBytes: file.size,
+      hashCode: generateFileHashCode(file.name, file.size),
     },
   };
 }
@@ -248,8 +263,8 @@ export async function parsePdfFile(file: File): Promise<ParsedFileResult> {
       rawItems.sort((a: any, b: any) => {
         const yA = a.transform ? a.transform[5] : 0;
         const yB = b.transform ? b.transform[5] : 0;
-        // Group items on roughly the same baseline (within 3px)
-        if (Math.abs(yA - yB) > 3) {
+        // Group items on roughly the same baseline (within 5.8px for superscripts/subscripts)
+        if (Math.abs(yA - yB) > 5.8) {
           return yB - yA; // top to bottom
         }
         const xA = a.transform ? a.transform[4] : 0;
@@ -329,7 +344,7 @@ export async function parsePdfFile(file: File): Promise<ParsedFileResult> {
 
           if (str.trim().length > 0) {
             lineItems.push({
-              str: str.trim(),
+              str: cleanPdfMathSymbols(str.trim()),
               x,
               width: w,
               y: bin.posY,
@@ -489,7 +504,7 @@ export async function parsePdfFile(file: File): Promise<ParsedFileResult> {
           id: `pdf-p-${paragraphCounter}`,
           paragraphIndex: paragraphCounter++,
           sentences: sentenceItems,
-          rawText: combinedText,
+          rawText: cleanPdfMathSymbols(combinedText),
           blockType,
           isHeading: blockType === 'heading',
           headingLevel,
@@ -764,6 +779,8 @@ export async function parsePdfFile(file: File): Promise<ParsedFileResult> {
       metadataDetails: {
         pageCount: numPages,
         fileSizeFormatted: formatBytes(file.size),
+        fileSizeBytes: file.size,
+        hashCode: generateFileHashCode(file.name, file.size),
         pdfCreator,
         pdfProducer,
         subject: pdfSubject,
@@ -1236,6 +1253,8 @@ export async function parseEpubFile(file: File): Promise<ParsedFileResult> {
       language: bookLanguage,
       chapters: chaptersFound,
       fileSizeFormatted: formatBytes(file.size),
+      fileSizeBytes: file.size,
+      hashCode: generateFileHashCode(file.name, file.size),
     },
     tableOfContents: tableOfContents.length > 0 ? tableOfContents : undefined,
   };

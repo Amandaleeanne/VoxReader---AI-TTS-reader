@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Header } from './components/Header';
 import { ReaderView } from './components/ReaderView';
 import { PlaybackBar } from './components/PlaybackBar';
@@ -7,10 +7,12 @@ import { VoiceSettingsModal } from './components/VoiceSettingsModal';
 import { LibraryModal } from './components/LibraryModal';
 import { AppearanceModal } from './components/AppearanceModal';
 import { ShortcutsModal } from './components/ShortcutsModal';
+import { DuplicateFileDialog } from './components/DuplicateFileDialog';
 import { ArticleDocument, DisplaySettings, VoiceSettings } from './types';
 import { TTSController } from './services/ttsService';
 import { parseTextIntoDocument } from './utils/textParser';
 import { processBinaryFileResponse } from './utils/fileParser';
+import { buildDocumentHashTable, findDuplicateDocument, generateFileHashCode } from './utils/fileHasher';
 import { SAMPLE_ARTICLES } from './data/sampleArticles';
 import {
   saveArticleToStorage,
@@ -49,6 +51,7 @@ const DEFAULT_DISPLAY_SETTINGS: DisplaySettings = {
   focusMode: false,
   bionicReading: false,
   showPageBreaks: false, // Default is off (Seamless mode)
+  defaultTableDisplay: 'both', // 'pdf' | 'table' | 'both'
 };
 
 export default function App() {
@@ -91,6 +94,17 @@ export default function App() {
   const [isLibraryOpen, setIsLibraryOpen] = useState(false);
   const [isAppearanceOpen, setIsAppearanceOpen] = useState(false);
   const [isShortcutsOpen, setIsShortcutsOpen] = useState(false);
+
+  // Duplicate File Detection State
+  const [duplicateConflict, setDuplicateConflict] = useState<{
+    incomingDoc: ArticleDocument;
+    existingDoc: ArticleDocument;
+  } | null>(null);
+
+  // Fast O(1) hash table lookup dictionary of all documents in VoxReader
+  const documentHashTable = useMemo(() => {
+    return buildDocumentHashTable(savedArticles);
+  }, [savedArticles]);
 
   // TTS Controller Ref
   const ttsControllerRef = useRef<TTSController | null>(null);
@@ -220,11 +234,28 @@ export default function App() {
   };
 
   // Load new document (from Webpage, File, or Paste)
-  const handleDocumentLoaded = async (newDoc: ArticleDocument) => {
+  const handleDocumentLoaded = async (
+    newDoc: ArticleDocument,
+    options?: { allowDuplicate?: boolean }
+  ) => {
     // 1. Immediately send stop signal to active TTS stream before switching documents
     ttsControllerRef.current?.stop();
 
     const sanitized = sanitizeStoredArticle(newDoc);
+
+    // 2. Perform fast O(1) hash table lookup to detect identical files
+    if (!options?.allowDuplicate) {
+      const existingDuplicate = findDuplicateDocument(sanitized, documentHashTable);
+      if (existingDuplicate) {
+        setIsImportOpen(false);
+        setDuplicateConflict({
+          incomingDoc: sanitized,
+          existingDoc: existingDuplicate,
+        });
+        return;
+      }
+    }
+
     setDocument(sanitized);
     setCurrentSentenceIndex(0);
     setCurrentWordIndex(null);
@@ -247,6 +278,47 @@ export default function App() {
         ttsControllerRef.current?.jumpToSentence(0, true);
       }, 150);
     }
+  };
+
+  // Duplicate prompt actions:
+  // 1. Switch to existing document
+  const handleSwitchToExisting = (existing: ArticleDocument) => {
+    setDuplicateConflict(null);
+    setIsImportOpen(false);
+    handleSelectFromLibrary(existing, existing.lastReadSentenceIndex || 0);
+  };
+
+  // 2. Make a duplicate copy
+  const handleMakeDuplicateCopy = async (incoming: ArticleDocument) => {
+    setDuplicateConflict(null);
+    setIsImportOpen(false);
+    const copyTitle = `${incoming.title} (Copy)`;
+    const copyId = `doc_${Date.now()}_copy_${Math.random().toString(36).slice(2, 6)}`;
+    const dataSize = incoming.metadataDetails?.fileSizeBytes || incoming.rawContent.length;
+    const copyHashCode = generateFileHashCode(copyTitle, dataSize);
+
+    const copyDoc: ArticleDocument = {
+      ...incoming,
+      id: copyId,
+      title: copyTitle,
+      hashCode: copyHashCode,
+      metadataDetails: {
+        ...incoming.metadataDetails,
+        hashCode: copyHashCode,
+      },
+      createdAt: Date.now(),
+      lastOpenedAt: Date.now(),
+      lastReadSentenceIndex: 0,
+    };
+
+    await handleDocumentLoaded(copyDoc, { allowDuplicate: true });
+    showToast(`Created duplicate copy: "${copyTitle}".`, 'success');
+  };
+
+  // 3. Cancel import
+  const handleCancelDuplicate = () => {
+    setDuplicateConflict(null);
+    showToast('File import cancelled.', 'info');
   };
 
   // Select document from Library
@@ -467,6 +539,16 @@ export default function App() {
       <ShortcutsModal
         isOpen={isShortcutsOpen}
         onClose={() => setIsShortcutsOpen(false)}
+      />
+
+      {/* Duplicate File Conflict Dialog */}
+      <DuplicateFileDialog
+        isOpen={Boolean(duplicateConflict)}
+        incomingDoc={duplicateConflict?.incomingDoc || null}
+        existingDoc={duplicateConflict?.existingDoc || null}
+        onSwitchToExisting={handleSwitchToExisting}
+        onMakeDuplicateCopy={handleMakeDuplicateCopy}
+        onCancel={handleCancelDuplicate}
       />
     </div>
   );

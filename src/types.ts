@@ -114,6 +114,8 @@ export interface TocItem {
 export interface DocumentMetadataDetails {
   pageCount?: number;
   fileSizeFormatted?: string;
+  fileSizeBytes?: number;
+  hashCode?: string; // Fast O(1) hash based on file name and amount of data
   publisher?: string;
   publicationDate?: string;
   language?: string;
@@ -131,6 +133,7 @@ export interface ArticleDocument {
   sourceUrl?: string;
   fileType: 'webpage' | 'pdf' | 'epub' | 'text' | 'manual' | 'markdown';
   rawContent: string;
+  hashCode?: string; // Fast lookup hash stored in document metadata
   paragraphs: ParagraphItem[];
   totalSentences: number;
   totalWords: number;
@@ -169,4 +172,6 @@ export interface DisplaySettings {
   focusMode: boolean; // Dims non-active sentences slightly to enhance focus
   bionicReading: boolean; // Bold initial letters of words
   showPageBreaks: boolean; // Seamless mode (false, default) vs Page break mode (true)
+  defaultTableDisplay?: 'pdf' | 'table' | 'both'; // Default display mode for tables with PDF crops
 }
+

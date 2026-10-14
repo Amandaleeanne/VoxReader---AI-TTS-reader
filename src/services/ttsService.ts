@@ -19,6 +19,15 @@ export function prepareSentenceSpokenText(sentence: SentenceItem): string {
     }
   );
 
+  // Spoken enhancements for math and boolean logic notation
+  text = text
+    .replace(/2ⁿ/g, 'two to the n-th power')
+    .replace(/2\^n/gi, 'two to the n-th power')
+    .replace(/\bv₁\b/gi, 'v 1')
+    .replace(/\bvₙ\b/gi, 'v n')
+    .replace(/\bvᵢ\b/gi, 'v i')
+    .replace(/f\s*\(\s*v₁\s*\.\.\.\s*vₙ\s*\)/gi, 'f of v 1 through v n');
+
   return text.replace(/\s+/g, ' ').trim();
 }
 

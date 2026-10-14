@@ -15,7 +15,7 @@
         "katex": "^0.19.0",
         "lucide-react": "^0.546.0",
         "motion": "^12.23.24",
-        "node-edge-tts": "^1.2.10",
+        "node-edge-tts": "1.2.11",
         "pdfjs-dist": "^6.3.289",
         "react": "^19.0.1",
         "react-dom": "^19.0.1",
@@ -528,7 +528,7 @@
 
     "node-domexception": ["node-domexception@1.0.0", "", {}, "sha512-/jKZoMpw0F8GRwl4/eLROPA3cfcXtLApP0QzLmUT/HuPCZWyB7IY9ZrMeKw2O/nFIqPQB3PVM9aYm0F312AXDQ=="],
 
-    "node-edge-tts": ["node-edge-tts@1.2.10", "", { "dependencies": { "https-proxy-agent": "^7.0.1", "ws": "^8.13.0", "yargs": "^17.7.2" }, "bin": { "node-edge-tts": "bin.js" } }, "sha512-bV2i4XU54D45+US0Zm1HcJRkifuB3W438dWyuJEHLQdKxnuqlI1kim2MOvR6Q3XUQZvfF9PoDyR1Rt7aeXhPdQ=="],
+    "node-edge-tts": ["node-edge-tts@1.2.11", "", { "dependencies": { "https-proxy-agent": "^7.0.1", "ws": "^8.13.0", "yargs": "^17.7.2" }, "bin": { "node-edge-tts": "bin.js" } }, "sha512-u+sekYUq+Y0JbNt12tOAK3J+iwT8NaGGbIdx2dtX+n7QSXT5YGCIUqZL58UK4YbpvpRjKI0PtQFwDKwcs1uC/A=="],
 
     "node-fetch": ["node-fetch@3.3.2", "", { "dependencies": { "data-uri-to-buffer": "^4.0.0", "fetch-blob": "^3.1.4", "formdata-polyfill": "^4.0.10" } }, "sha512-dRB78srN/l6gqWulah9SrxeYnxeddIG30+GOqK/9OlLVyLg3HPnr6SqOWTWOXKRwC2eGYCkZ59NNuSgvSrpgOA=="],
 

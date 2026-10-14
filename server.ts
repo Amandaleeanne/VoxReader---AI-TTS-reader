@@ -91,9 +91,8 @@ async function synthesizeEdgeDirect(
     }, timeoutMs);
 
     try {
-      const url = `wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1?TrustedClientToken=${TRUSTED_CLIENT_TOKEN}&Sec-MS-GEC=${generateSecMsGecToken()}&Sec-MS-GEC-Version=1-${CHROMIUM_FULL_VERSION}`;
+      const url = `wss://api.msedgeservices.com/tts/cognitiveservices/websocket/v1?Ocp-Apim-Subscription-Key=${TRUSTED_CLIENT_TOKEN}&Sec-MS-GEC=${generateSecMsGecToken()}&Sec-MS-GEC-Version=1-${CHROMIUM_FULL_VERSION}`;
       ws = new WebSocket(url, {
-        host: "speech.platform.bing.com",
         origin: "chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold",
         headers: {
           Pragma: "no-cache",
@@ -284,13 +283,13 @@ app.post("/api/tts/edge", async (req, res) => {
     }
   });
 
+  const selectedVoice = (req.body.voice as string) || "en-US-AriaNeural";
   try {
-    const { text, voice } = req.body;
+    const { text } = req.body;
     if (!text || typeof text !== "string" || !text.trim()) {
       return res.status(400).json({ error: "Text is required for EdgeTTS." });
     }
 
-    const selectedVoice = voice || "en-US-AriaNeural";
     const cleanText = text.trim().slice(0, 3000);
 
     const cacheKey = `edge:${selectedVoice}:${cleanText}`;
@@ -332,6 +331,40 @@ app.post("/api/tts/edge", async (req, res) => {
       }
     } catch {
       // ignore retry error
+    }
+
+    // High-speed fallback to Gemini neural TTS if Edge service is unreachable
+    try {
+      const cleanText = (req.body.text || "").trim().slice(0, 3000);
+      const geminiVoiceMap: Record<string, string> = {
+        "en-US-AriaNeural": "Kore",
+        "en-US-GuyNeural": "Fenrir",
+        "en-US-JennyNeural": "Zephyr",
+        "en-GB-SoniaNeural": "Charon",
+        "en-GB-RyanNeural": "Puck",
+      };
+      const fallbackVoice = geminiVoiceMap[selectedVoice] || "Kore";
+      const aiResponse = await defaultAi.models.generateContent({
+        model: "gemini-3.8-flash-lite-tts",
+        contents: [{ role: "user", parts: [{ text: cleanText }] }],
+        config: {
+          responseModalities: ["AUDIO"],
+          speechConfig: {
+            voiceConfig: { prebuiltVoiceConfig: { voiceName: fallbackVoice } },
+          },
+        },
+      });
+      const part = aiResponse.candidates?.[0]?.content?.parts?.[0];
+      const base64Audio = part?.inlineData?.data;
+      if (base64Audio && !res.writableEnded) {
+        return res.json({
+          audioBase64: base64Audio,
+          mimeType: part?.inlineData?.mimeType || "audio/wav",
+          voice: selectedVoice,
+        });
+      }
+    } catch {
+      // ignore fallback error
     }
 
     if (!res.writableEnded) {

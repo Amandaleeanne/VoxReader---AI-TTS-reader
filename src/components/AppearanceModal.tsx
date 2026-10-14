@@ -10,7 +10,11 @@ import {
   AlignCenter,
   Sparkles,
   FileText,
+  Table as TableIcon,
+  FileImage,
+  Columns,
 } from 'lucide-react';
+
 import { DisplaySettings } from '../types';
 
 interface AppearanceModalProps {
@@ -207,6 +211,62 @@ export const AppearanceModal: React.FC<AppearanceModalProps> = ({
                   >
                     {al.icon}
                     <span>{al.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Default Table Display (PDF view, data table, or both) */}
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <label className="block text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
+                Default Table Display
+              </label>
+              <span className="text-[11px] text-amber-600 dark:text-amber-400 font-medium">
+                Switchable per table
+              </span>
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              {[
+                {
+                  id: 'pdf',
+                  label: 'PDF View',
+                  icon: <FileImage className="w-3.5 h-3.5 text-blue-500" />,
+                  desc: 'Original PDF crop',
+                },
+                {
+                  id: 'table',
+                  label: 'Data Table',
+                  icon: <TableIcon className="w-3.5 h-3.5 text-emerald-500" />,
+                  desc: 'Structured table',
+                },
+                {
+                  id: 'both',
+                  label: 'Both',
+                  icon: <Columns className="w-3.5 h-3.5 text-amber-500" />,
+                  desc: 'Combined view',
+                },
+              ].map((opt) => {
+                const isSelected = (settings.defaultTableDisplay || 'both') === opt.id;
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => onUpdateSettings({ ...settings, defaultTableDisplay: opt.id as any })}
+                    className={`p-2.5 rounded-xl border text-left transition-all flex flex-col gap-1 ${
+                      isSelected
+                        ? 'border-amber-500 bg-amber-50 dark:bg-amber-950/40 ring-1 ring-amber-500 text-neutral-900 dark:text-white shadow-xs'
+                        : 'border-neutral-200 dark:border-neutral-800 hover:bg-neutral-50 dark:hover:bg-neutral-800/60 text-neutral-600 dark:text-neutral-400'
+                    }`}
+                  >
+                    <div className="flex items-center gap-1.5 font-semibold text-xs text-neutral-900 dark:text-neutral-100">
+                      {opt.icon}
+                      <span>{opt.label}</span>
+                    </div>
+                    <span className="text-[10px] text-neutral-500 dark:text-neutral-400 leading-tight">
+                      {opt.desc}
+                    </span>
                   </button>
                 );
               })}

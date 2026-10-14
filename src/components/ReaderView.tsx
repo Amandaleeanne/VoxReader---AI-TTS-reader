@@ -29,6 +29,7 @@ import {
   Image as ImageIcon,
   FileImage,
   Eye,
+  Hash,
 } from 'lucide-react';
 
 interface ReaderViewProps {
@@ -152,6 +153,7 @@ interface ReaderTableBlockProps {
   activeSentenceRef: React.RefObject<HTMLElement | null>;
   onSentenceClick: (sentenceIndex: number) => void;
   onNavigateToUrl?: (url: string) => void;
+  defaultTableDisplay?: 'pdf' | 'table' | 'both';
 }
 
 const ReaderTableBlock: React.FC<ReaderTableBlockProps> = ({
@@ -161,6 +163,7 @@ const ReaderTableBlock: React.FC<ReaderTableBlockProps> = ({
   activeSentenceRef,
   onSentenceClick,
   onNavigateToUrl,
+  defaultTableDisplay = 'both',
 }) => {
   const tableData = paragraph.tableData;
   if (!tableData) return null;
@@ -170,7 +173,17 @@ const ReaderTableBlock: React.FC<ReaderTableBlockProps> = ({
     isTruthTable ||
     (rows.length >= 2 && rows.every((r) => r.length >= 2 && r.every((c) => isTruthValueToken(c))));
 
-  const [viewMode, setViewMode] = useState<'pdf' | 'table' | 'both'>(imageUrl ? 'both' : 'table');
+  const initialMode: 'pdf' | 'table' | 'both' = imageUrl
+    ? (defaultTableDisplay || 'both')
+    : 'table';
+  const [viewMode, setViewMode] = useState<'pdf' | 'table' | 'both'>(initialMode);
+
+  // Update default view mode when setting changes
+  useEffect(() => {
+    if (imageUrl && defaultTableDisplay) {
+      setViewMode(defaultTableDisplay);
+    }
+  }, [defaultTableDisplay, imageUrl]);
   const [copied, setCopied] = useState(false);
   const [isZoomed, setIsZoomed] = useState(false);
 
@@ -975,6 +988,17 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
               <Clock className="w-3 h-3" />
               {estReadTime} min read · {document.totalWords.toLocaleString()} words
             </span>
+
+            {/* Document File Hash Code */}
+            {document.hashCode && (
+              <span
+                className="inline-flex items-center gap-1 text-xs text-neutral-400 dark:text-neutral-500 font-mono bg-neutral-100/80 dark:bg-neutral-800/80 px-2 py-0.5 rounded"
+                title={`File Hash Code: #${document.hashCode}`}
+              >
+                <Hash className="w-3 h-3 text-neutral-400" />
+                #{document.hashCode}
+              </span>
+            )}
           </div>
 
           <h1 className="text-2xl sm:text-4xl font-bold tracking-tight text-neutral-900 dark:text-white mb-2 leading-tight">
@@ -1228,6 +1252,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                     activeSentenceRef={activeSentenceRef}
                     onSentenceClick={onSentenceClick}
                     onNavigateToUrl={onNavigateToUrl}
+                    defaultTableDisplay={displaySettings.defaultTableDisplay || 'both'}
                   />
                 );
               }

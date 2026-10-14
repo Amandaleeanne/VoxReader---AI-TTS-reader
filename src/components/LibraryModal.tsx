@@ -118,10 +118,13 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
 
   // Filtered list
   const filteredArticles = articles.filter((a) => {
+    const q = searchQuery.toLowerCase().trim();
+    const cleanHashQuery = q.replace(/^#/, '');
     const matchesSearch =
-      a.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      a.domain?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      a.author?.toLowerCase().includes(searchQuery.toLowerCase());
+      a.title.toLowerCase().includes(q) ||
+      a.domain?.toLowerCase().includes(q) ||
+      a.author?.toLowerCase().includes(q) ||
+      (Boolean(a.hashCode) && a.hashCode!.toLowerCase().includes(cleanHashQuery));
     const matchesFav = filterFavorites ? a.favorite : true;
     return matchesSearch && matchesFav;
   });
@@ -241,10 +244,15 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
                   }`}
                 >
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-1">
+                    <div className="flex items-center gap-2 mb-1 flex-wrap">
                       <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-300">
                         {article.fileType}
                       </span>
+                      {article.hashCode && (
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-neutral-150 dark:bg-neutral-800 text-neutral-500 dark:text-neutral-400" title={`File Hash: #${article.hashCode}`}>
+                          #{article.hashCode}
+                        </span>
+                      )}
                       {article.domain && (
                         <span className="text-[11px] text-neutral-400 truncate max-w-[150px]">
                           {article.domain}
